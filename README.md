@@ -139,7 +139,6 @@ not touch them.
 | | |
 |---|---|
 | `fontconfig` | `fc-list`, `fc-scan`, `fc-cache` — present on any Omarchy install |
-| `jq` | one-time registration in `shell.json` — already an Omarchy dependency |
 | `unzip` | only to install from a `.zip` |
 | `zenity` | **optional** — adds the *Install from file…* button. Without it, use drag-and-drop or the double-click handler |
 
