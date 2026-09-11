@@ -74,12 +74,34 @@ Keys: `Esc` clears the filter, then closes. `Enter` installs a staged font.
 until they restart.** That is fontconfig, not this plugin — every font
 manager on Linux behaves this way. New windows pick it up immediately.
 
+## Removing it
+
+```bash
+omarchy plugin remove nosignal.omafont
+```
+
+If you registered the double-click handler, undo it with:
+
+```bash
+rm -f ~/.local/bin/omafont-open ~/.local/share/applications/omafont.desktop
+update-desktop-database ~/.local/share/applications
+```
+
+Fonts you installed through the panel stay in `~/.local/share/fonts` — removing
+the plugin does not touch them. Delete the folders there if you want them gone.
+
 ## Requirements
 
-`fontconfig` (already present on any Omarchy install). `zenity` is optional —
-if it is installed you get an **Install from file...** button; if not, use
-drag-and-drop or the double-click handler.
+| | |
+|---|---|
+| `fontconfig` | `fc-list`, `fc-scan`, `fc-cache` — present on any Omarchy install |
+| `jq` | one-time registration in `shell.json` — an Omarchy dependency already |
+| `unzip` | only to install from a `.zip`; everything else works without it |
+| `zenity` | **optional.** Adds the *Install from file…* button. Without it, use drag-and-drop or the double-click handler |
+
+No network access, no elevated privileges — everything runs as you, and writes
+only to `~/.local/share/fonts`.
 
 ## Licence
 
-MIT.
+MIT — see [LICENSE](LICENSE).

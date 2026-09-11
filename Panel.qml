@@ -178,11 +178,6 @@ Item {
     return common.length ? common.join(" ") : fams[0]
   }
 
-  readonly property string stagedName: {
-    if (!root.stagedPath) return ""
-    var p = root.stagedPath.split("/")
-    return p[p.length - 1]
-  }
 
   // True once the staged file's family is already present on disk. Turns the
   // Install button into a labelled no-op rather than silently overwriting.
@@ -432,8 +427,12 @@ Item {
     'mkdir -p -- "$dest"',
     'n=0',
     'for f in "$@"; do',
-    '  case "$f" in',
-    '    *.ttf|*.TTF|*.otf|*.OTF|*.ttc|*.TTC) ;;',
+    '  # Lowercase the extension rather than globbing fixed cases: a file named',
+    '  # Mixed.TtF passes the QML side and would be silently skipped here, so',
+    '  # the UI would promise more fonts than it installed.',
+    '  ext=$(printf %s "${f##*.}" | tr \'[:upper:]\' \'[:lower:]\')',
+    '  case "$ext" in',
+    '    ttf|otf|ttc) ;;',
     '    *) continue ;;',
     '  esac',
     '  [ -f "$f" ] || continue',
@@ -638,7 +637,7 @@ Item {
     '      # Backgrounded and waited on deliberately: a POSIX shell defers traps',
     '      # while a FOREGROUND child runs, so cancelling mid-extract would not',
     '      # clean up until unzip finished anyway. With wait, the signal lands.',
-    '      timeout 60 unzip -j -qq -o "$src" \'*.ttf\' \'*.otf\' \'*.ttc\' \'*.TTF\' \'*.OTF\' \'*.TTC\' -d "$work" >/dev/null 2>&1 &',
+    '      timeout 60 unzip -C -j -qq -o "$src" \'*.ttf\' \'*.otf\' \'*.ttc\' -d "$work" >/dev/null 2>&1 &',
     '      upid=$!',
     '      trap \'kill "$upid" 2>/dev/null; rm -rf -- "$work" 2>/dev/null; exit 143\' TERM INT HUP',
     '      wait "$upid" || true',
