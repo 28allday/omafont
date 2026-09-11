@@ -191,13 +191,27 @@ Item {
   readonly property bool stagedInstalled: {
     var fams = root.stagedFamilies
     if (!fams.length) return false
-    for (var i = 0; i < fams.length; i++) {
-      var found = false
-      for (var j = 0; j < root.families.length; j++)
-        if (root.families[j].name === fams[i]) { found = true; break }
-      if (!found) return false
-    }
+    for (var i = 0; i < fams.length; i++)
+      if (root.installedNames[fams[i]] !== true) return false
     return true
+  }
+
+  // One index, rebuilt when the font list changes, so the per-item lookups
+  // above and the install list below are hash hits rather than a scan of the
+  // whole collection each time.
+  readonly property var installedNames: {
+    var m = ({})
+    for (var i = 0; i < root.families.length; i++) m[root.families[i].name] = true
+    return m
+  }
+
+  readonly property var stagedFamilyCounts: {
+    var m = ({})
+    for (var i = 0; i < root.stagedSelected.length; i++) {
+      var n = root.stagedSelected[i].family
+      m[n] = (m[n] || 0) + 1
+    }
+    return m
   }
 
   readonly property var selected: {
@@ -277,7 +291,8 @@ Item {
 
   Process {
     id: latinScanner
-    command: ["fc-list", ":lang=en", "--format", "%{family[0]}\n"]
+    command: ["sh", "-c", root.boundedScanScript, "omafont-latin",
+              "%{family[0]}\n", String(root.scanCap + 1), "fc-list", ":lang=en"]
     stdout: StdioCollector {
       onStreamFinished: {
         var map = ({})
@@ -299,9 +314,31 @@ Item {
   // ---- Scan --------------------------------------------------------------
   // One fc-list pass gives family, style, path and spacing. spacing 100 is
   // fontconfig's mono flag, which is what gates "Set as terminal font".
+  // Every subprocess read is bounded and timed out. StdioCollector has no size
+  // limit of its own, so an enormous font tree -- or a path on a dead network
+  // mount -- would otherwise grow or block inside the shell process, which is
+  // the whole desktop. Read cap+1 bytes so truncation is detectable rather
+  // than silent.
+  readonly property int scanCap: 8388608
+  readonly property int maxFaces: 2000
+
+  readonly property string boundedScanScript: [
+    'set -eu',
+    'fmt="$1"; cap="$2"; shift 2',
+    'timeout 30 "$@" --format="$fmt" 2>/dev/null | head -c "$cap"'
+  ].join("\n")
+
+  readonly property string boundedFcScanScript: [
+    'set -eu',
+    'fmt="$1"; cap="$2"; shift 2',
+    'timeout 30 fc-scan --format="$fmt" "$@" 2>/dev/null | head -c "$cap"'
+  ].join("\n")
+
   Process {
     id: scanner
-    command: ["fc-list", "--format", "%{family[0]}\t%{style[0]}\t%{file}\t%{spacing}\n"]
+    command: ["sh", "-c", root.boundedScanScript, "omafont-scan",
+              "%{family[0]}\t%{style[0]}\t%{file}\t%{spacing}\n",
+              String(root.scanCap + 1), "fc-list"]
     stdout: StdioCollector {
       onStreamFinished: {
         root.parseFcList(this.text)
@@ -316,9 +353,11 @@ Item {
   }
 
   function parseFcList(text) {
+    // A list that quietly stopped short reads as "there was nothing else" --
+    // a worse lie than a cap. Say so instead.
+    if (text.length > root.scanCap)
+      root.status = "Font list truncated -- more fonts here than the panel will show"
     var lines = text.split("\n")
-    // Bounded: a pathological font tree should not stall the shell. ~2600
-    // faces is typical; 40k is far past any real install.
     var cap = Math.min(lines.length, 40000)
     var map = ({})
     var home = Quickshell.env("HOME") || ""
@@ -551,18 +590,44 @@ Item {
   // so a hostile archive's ../.. entries are inert.
   readonly property string stagePrepScript: [
     'set -eu',
+    '# A shell plugin runs inside the shell process, and the extract target is',
+    '# $XDG_RUNTIME_DIR -- tmpfs, i.e. RAM. An unbounded extract there does not',
+    '# break this panel, it takes the desktop session down. A 204KB archive can',
+    '# declare 200MB of "fonts" and unzip applies no limit of its own.',
+    'MAX_BYTES=134217728',
+    'MAX_ENTRIES=4000',
+    'MAX_KB=$((MAX_BYTES / 1024))',
     'work=""',
     'found=0',
     'for src in "$@"; do',
     '  case "$src" in',
     '    *.zip|*.ZIP)',
+    '      # Cheap gate on the declared totals. A header can lie, so this is not',
+    '      # the real defence -- the measured check after extraction is.',
+    '      info=$(timeout 10 unzip -Zt "$src" 2>/dev/null) || info=""',
+    '      entries=$(printf %s "$info" | awk \'{print $1}\')',
+    '      bytes=$(printf %s "$info" | awk \'{print $3}\')',
+    '      case "$entries" in \'\'|*[!0-9]*) entries=0 ;; esac',
+    '      case "$bytes" in \'\'|*[!0-9]*) bytes=0 ;; esac',
+    '      if [ "$entries" -gt "$MAX_ENTRIES" ] || [ "$bytes" -gt "$MAX_BYTES" ]; then',
+    '        echo "that archive is too large to unpack safely" >&2',
+    '        exit 3',
+    '      fi',
     '      if [ -z "$work" ]; then',
     '        work="${XDG_RUNTIME_DIR:-/tmp}/omafont-stage-$$"',
     '        rm -rf -- "$work"',
     '        mkdir -p -- "$work"',
     '        printf "TEMP %s\\n" "$work"',
     '      fi',
-    '      unzip -j -qq -o "$src" \'*.ttf\' \'*.otf\' \'*.ttc\' \'*.TTF\' \'*.OTF\' \'*.TTC\' -d "$work" >/dev/null 2>&1 || true',
+    '      timeout 60 unzip -j -qq -o "$src" \'*.ttf\' \'*.otf\' \'*.ttc\' \'*.TTF\' \'*.OTF\' \'*.TTC\' -d "$work" >/dev/null 2>&1 || true',
+    '      # What actually landed, which is the number that can hurt.',
+    '      used=$(du -sk "$work" 2>/dev/null | awk \'{print $1}\')',
+    '      case "$used" in \'\'|*[!0-9]*) used=0 ;; esac',
+    '      if [ "$used" -gt "$MAX_KB" ]; then',
+    '        rm -rf -- "$work"',
+    '        echo "that archive expanded past the size limit" >&2',
+    '        exit 3',
+    '      fi',
     '      ;;',
     '    *)',
     '      [ -e "$src" ] || continue',
@@ -596,7 +661,8 @@ Item {
         if (!targets.length) return
         // fc-scan walks several paths in one pass, so a multi-file drop costs
         // the same as a single one.
-        var cmd = ["fc-scan", "--format", "%{family[0]}\t%{style[0]}\t%{file}\n"]
+        var cmd = ["sh", "-c", root.boundedFcScanScript, "omafont-stagescan",
+                   "%{family[0]}\t%{style[0]}\t%{file}\n", String(root.scanCap + 1)]
         stageScan.command = cmd.concat(targets)
         stageScan.running = true
       }
@@ -634,6 +700,16 @@ Item {
           root.status = "No installable fonts found in that"
           return
         }
+        // Every staged face becomes one argv entry at install time, and a
+        // crafted folder decides how many there are -- past a point the kernel
+        // refuses the exec. Cap it, and report the real total so the UI is not
+        // lying about what it is holding.
+        var truncated = false
+        if (faces.length > root.maxFaces) {
+          truncated = true
+          faces = faces.slice(0, root.maxFaces)
+        }
+        if (this.text.length > root.scanCap) truncated = true
         faces.sort(function(a, b) {
           var an = (a.family + " " + a.style).toLowerCase()
           var bn = (b.family + " " + b.style).toLowerCase()
@@ -642,7 +718,9 @@ Item {
         root.stagedFaces = faces
         root.stagedFormat = "all"
         root.stagedPath = faces[0].file
-        root.status = ""
+        root.status = truncated
+          ? "Showing the first " + faces.length + " fonts -- that source holds more"
+          : ""
       }
     }
   }
@@ -706,9 +784,25 @@ Item {
     // no gain. The shortcuts that would otherwise be swallowed (Esc, Enter)
     // are handled on the field itself.
     filterField.forceActiveFocus()
+    // The IPC payload is the least trusted input this panel has: any process
+    // on the session can send one. Bound it where it arrives rather than
+    // trusting the staging path to cope.
     try {
+      if (payloadJson && payloadJson.length > 65536) return
       var payload = JSON.parse(payloadJson || "{}")
-      if (payload && payload.install) root.stage(payload.install)
+      if (!payload || !payload.install) return
+      var want = payload.install
+      if (typeof want === "string") {
+        if (want.length <= 4096) root.stage(want)
+        return
+      }
+      if (Array.isArray(want)) {
+        var paths = []
+        for (var i = 0; i < want.length && paths.length < 64; i++)
+          if (typeof want[i] === "string" && want[i].length <= 4096)
+            paths.push(want[i])
+        if (paths.length) root.stage(paths)
+      }
     } catch (e) {
       // A malformed payload must never keep the panel from opening.
     }
@@ -797,7 +891,8 @@ Item {
         keys: ["text/uri-list"]
         onDropped: function(drop) {
           if (drop.hasUrls && drop.urls.length) {
-            root.stage(drop.urls)
+            // A drag can carry an arbitrary number of URLs.
+            root.stage(drop.urls.length > 64 ? drop.urls.slice(0, 64) : drop.urls)
             drop.accept()
           }
         }
@@ -869,6 +964,7 @@ Item {
           height: root.headerH
 
           Text {
+            textFormat: Text.PlainText
             id: titleText
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
@@ -1070,6 +1166,7 @@ Item {
                     color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
 
                     Text {
+                      textFormat: Text.PlainText
                       anchors.centerIn: parent
                       text: "M"
                       color: root.accent
@@ -1117,6 +1214,7 @@ Item {
               visible: !root.selected && !root.stagedPath
 
               Text {
+                textFormat: Text.PlainText
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: "Aa"
                 color: root.foreground
@@ -1125,6 +1223,7 @@ Item {
                 font.pixelSize: Style.space(56)
               }
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 text: "Pick a font to preview it"
@@ -1134,6 +1233,7 @@ Item {
                 font.pixelSize: Style.font.subtitle
               }
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
@@ -1273,6 +1373,7 @@ Item {
                     spacing: Style.spacing.md
 
                     Text {
+                      textFormat: Text.PlainText
                       width: Style.space(22)
                       anchors.verticalCenter: parent.verticalCenter
                       horizontalAlignment: Text.AlignRight
@@ -1322,6 +1423,7 @@ Item {
                   visible: root.stagedPath !== "" && root.stagedFamilies.length > 0
 
                   Text {
+                    textFormat: Text.PlainText
                     width: parent.width
                     text: "Will install"
                     color: root.foreground
@@ -1340,12 +1442,7 @@ Item {
                       width: preview.width
                       elide: Text.ElideRight
                       textFormat: Text.PlainText
-                      text: {
-                        var n = 0
-                        for (var i = 0; i < root.stagedSelected.length; i++)
-                          if (root.stagedSelected[i].family === modelData) n++
-                        return modelData + "  " + n
-                      }
+                      text: modelData + "  " + (root.stagedFamilyCounts[modelData] || 0)
                       color: root.foreground
                       opacity: 0.6
                       font.family: root.fontFamily
@@ -1354,6 +1451,7 @@ Item {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     width: parent.width
                     wrapMode: Text.WordWrap
                     text: "into ~/.local/share/fonts/" + root.slug(root.stagedGroup) + "/"
