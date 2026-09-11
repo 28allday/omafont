@@ -1,0 +1,26 @@
+#!/bin/sh
+# Stage a font file in the Fonts panel.
+#
+# This is what the .desktop mime handler runs, so double-clicking a font file
+# in a file manager lands here. It uses `summon` rather than `toggle`: opening
+# a file must always open the panel, never close an already-open one.
+#
+# Path normalising (file:// prefixes, percent-escapes) is deliberately left to
+# the panel's stage(), which already does it for drag-and-drop.
+set -eu
+
+if [ $# -lt 1 ]; then
+  echo "usage: omafont-open <font-file>" >&2
+  exit 2
+fi
+
+f=$1
+case $f in
+  /*|file://*) ;;
+  *) f="$PWD/$f" ;;
+esac
+
+# JSON-escape the two characters that can break the payload.
+esc=$(printf '%s' "$f" | sed 's/\\/\\\\/g; s/"/\\"/g')
+
+exec omarchy-shell shell summon nosignal.omafont "{\"install\":\"$esc\"}"

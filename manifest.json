@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "nosignal.omafont",
+  "name": "Fonts",
+  "version": "0.1.0",
+  "author": "Gavin Nugent",
+  "license": "MIT",
+  "description": "Browse, preview, install and remove fonts. Drop a font file on the panel or double-click one in a file manager to preview it before installing. Summon with: omarchy-shell shell toggle nosignal.omafont",
+  "kinds": ["panel", "bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "panel": "Panel.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Fonts",
+    "description": "Bar icon that toggles the font panel",
+    "category": "System",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}

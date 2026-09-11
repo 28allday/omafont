@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Fonts
+Comment=Preview and install a font
+Exec=omafont-open %f
+Icon=preferences-desktop-font
+Terminal=false
+Categories=Utility;DesktopSettings;
+MimeType=font/ttf;font/otf;font/collection;font/sfnt;application/x-font-ttf;application/x-font-otf;application/x-font-ttc;
