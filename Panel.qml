@@ -346,6 +346,11 @@ Item {
 
   readonly property string catalogueScript: [
     'set -eu',
+    '# The shell process inherits a PATH with user-writable directories ahead',
+    '# of /usr/bin, so every bare command name here would be substitutable.',
+    '# Pin it before running anything.',
+    'PATH=/usr/local/bin:/usr/bin:/bin',
+    'export PATH',
     '# Catalogue fetch, cached on disk. Bounded three ways: a wall-clock timeout,',
     '# a hard byte ceiling from curl itself, and a read ceiling on the way in.',
     'cache="$1"; cap="$2"; maxage="$3"',
@@ -378,6 +383,11 @@ Item {
 
   readonly property string downloadScript: [
     'set -eu',
+    '# The shell process inherits a PATH with user-writable directories ahead',
+    '# of /usr/bin, so every bare command name here would be substitutable.',
+    '# Pin it before running anything.',
+    'PATH=/usr/local/bin:/usr/bin:/bin',
+    'export PATH',
     '# args: destdir id subset cacheroot  then WEIGHT STYLE pairs',
     '#',
     '# URLs are BUILT here from validated components, never taken from a response.',
@@ -494,6 +504,11 @@ Item {
 
   readonly property string nerdScript: [
     'set -eu',
+    '# The shell process inherits a PATH with user-writable directories ahead',
+    '# of /usr/bin, so every bare command name here would be substitutable.',
+    '# Pin it before running anything.',
+    'PATH=/usr/local/bin:/usr/bin:/bin',
+    'export PATH',
     '# Nerd Fonts ship as one zip per family on a GitHub release. Cached, because',
     '# unauthenticated GitHub API calls are rate limited to 60/hour per address.',
     'cache="$1"; cap="$2"; maxage="$3"',
@@ -519,6 +534,11 @@ Item {
 
   readonly property string zipDownloadScript: [
     'set -eu',
+    '# The shell process inherits a PATH with user-writable directories ahead',
+    '# of /usr/bin, so every bare command name here would be substitutable.',
+    '# Pin it before running anything.',
+    'PATH=/usr/local/bin:/usr/bin:/bin',
+    'export PATH',
     '# args: destdir tag asset maxbytes',
     '#',
     '# Downloads to the DISK cache, never $XDG_RUNTIME_DIR: these archives run to',
