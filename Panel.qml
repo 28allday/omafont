@@ -394,10 +394,21 @@ Item {
     }
   }
 
+  // The host's hide() calls straight back into this close(), so the early
+  // return is load-bearing, not defensive tidiness: without it the two recurse
+  // until the JS stack blows ("Maximum call stack size exceeded") and the panel
+  // never closes. Clearing `opened` first is what breaks the cycle on re-entry.
   function close() {
+    if (!root.opened) return
     root.opened = false
     root.stagedPath = ""
-    if (root.shell && root.shell.hide) root.shell.hide(root.selfId)
+    if (root.shell && typeof root.shell.hide === "function")
+      root.shell.hide(root.selfId)
+  }
+
+  function toggle() {
+    if (root.opened) root.close()
+    else root.open("{}")
   }
 
   // ---- Self-reference ----------------------------------------------------
@@ -489,12 +500,28 @@ Item {
           } else if ((event.key === Qt.Key_R || event.key === Qt.Key_F5) && !filterField.activeFocus) {
             root.refresh()
             event.accepted = true
+          } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            // Enter installs a staged font. The staged state is the one moment
+            // the panel has an obvious default action, and arriving here from a
+            // double-click in the file manager means the hands are not on the
+            // mouse anyway.
+            if (root.stagedPath) {
+              root.installStaged()
+              event.accepted = true
+            }
           }
         }
       }
 
+      // BorderSurface.padding only publishes contentInset hints -- it does not
+      // inset its children -- so a bare anchors.fill puts content hard against
+      // the border. Apply the insets by hand, as the sibling panels do.
       Column {
         anchors.fill: parent
+        anchors.topMargin: card.contentTopInset
+        anchors.bottomMargin: card.contentBottomInset
+        anchors.leftMargin: card.contentLeftInset
+        anchors.rightMargin: card.contentRightInset
         spacing: root.contentSpacing
 
         // Header
