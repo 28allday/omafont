@@ -9,6 +9,11 @@
 # the panel's stage(), which already does it for drag-and-drop.
 set -eu
 
+# Same reasoning as the installer: this runs from a .desktop entry, whose PATH
+# comes from the session and is not ours to trust.
+PATH=/usr/local/bin:/usr/bin:/bin
+export PATH
+
 if [ $# -lt 1 ]; then
   echo "usage: omafont-open <font-file>" >&2
   exit 2
@@ -23,4 +28,7 @@ esac
 # JSON-escape the two characters that can break the payload.
 esc=$(printf '%s' "$f" | sed 's/\\/\\\\/g; s/"/\\"/g')
 
-exec omarchy-shell shell summon nosignal.omafont "{\"install\":\"$esc\"}"
+# omarchy-shell lives under $OMARCHY_PATH/bin, outside the standard prefixes,
+# so it is resolved from the environment rather than found on PATH.
+OMARCHY_BIN="${OMARCHY_PATH:-/usr/share/omarchy}/bin"
+exec "$OMARCHY_BIN/omarchy-shell" shell summon nosignal.omafont "{\"install\":\"$esc\"}"

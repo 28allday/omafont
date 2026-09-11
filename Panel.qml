@@ -34,6 +34,11 @@ Item {
   // sibling panel-kind plugins -- REQUIRED so this survives plugin-manager
   // toggles.
   property var shell: null
+
+  // Injected by the host when a plugin declares it (shell.qml sets omarchyPath
+  // on any target that has the property); the env var is the fallback.
+  property string omarchyPath: Quickshell.env("OMARCHY_PATH") || "/usr/share/omarchy"
+  readonly property string omarchyBin: root.omarchyPath + "/bin"
   onShellChanged: {
     if (!root.opened && root.shell && root.shell.openPanelIds
         && root.shell.openPanelIds[root.selfId] === true)
@@ -301,7 +306,7 @@ Item {
 
   Process {
     id: latinScanner
-    command: ["sh", "-c", root.boundedScanScript, "omafont-latin",
+    command: ["/bin/sh", "-c", root.boundedScanScript, "omafont-latin",
               "%{family[0]}\n", String(root.scanCap + 1), "fc-list", ":lang=en"]
     stdout: StdioCollector {
       onStreamFinished: {
@@ -334,19 +339,29 @@ Item {
 
   readonly property string boundedScanScript: [
     'set -eu',
+    '# The shell process inherits a PATH with user-writable directories ahead',
+    '# of /usr/bin, so every bare command name here would be substitutable.',
+    '# Pin it before running anything.',
+    'PATH=/usr/local/bin:/usr/bin:/bin',
+    'export PATH',
     'fmt="$1"; cap="$2"; shift 2',
     'timeout 30 "$@" --format="$fmt" 2>/dev/null | head -c "$cap"'
   ].join("\n")
 
   readonly property string boundedFcScanScript: [
     'set -eu',
+    '# The shell process inherits a PATH with user-writable directories ahead',
+    '# of /usr/bin, so every bare command name here would be substitutable.',
+    '# Pin it before running anything.',
+    'PATH=/usr/local/bin:/usr/bin:/bin',
+    'export PATH',
     'fmt="$1"; cap="$2"; shift 2',
     'timeout 30 fc-scan --format="$fmt" "$@" 2>/dev/null | head -c "$cap"'
   ].join("\n")
 
   Process {
     id: scanner
-    command: ["sh", "-c", root.boundedScanScript, "omafont-scan",
+    command: ["/bin/sh", "-c", root.boundedScanScript, "omafont-scan",
               "%{family[0]}\t%{style[0]}\t%{file}\t%{spacing}\n",
               String(root.scanCap + 1), "fc-list"]
     stdout: StdioCollector {
@@ -421,6 +436,11 @@ Item {
   // QML, so nothing but a font can be copied in whatever the caller believes.
   readonly property string installScript: [
     'set -eu',
+    '# The shell process inherits a PATH with user-writable directories ahead',
+    '# of /usr/bin, so every bare command name here would be substitutable.',
+    '# Pin it before running anything.',
+    'PATH=/usr/local/bin:/usr/bin:/bin',
+    'export PATH',
     'sub="$1"; shift',
     '# Re-checked here rather than trusted from QML: a destination is a',
     '# single path segment, never a path.',
@@ -428,6 +448,8 @@ Item {
     '  ""|*/*|*..*) echo "bad destination" >&2; exit 2 ;;',
     'esac',
     'dest="$HOME/.local/share/fonts/$sub"',
+    '# A symlinked family directory would redirect the whole install.',
+    '[ -L "$dest" ] && { echo "destination is a symlink" >&2; exit 2; }',
     'mkdir -p -- "$dest"',
     'n=0',
     'for f in "$@"; do',
@@ -439,6 +461,7 @@ Item {
     '    ttf|otf|ttc) ;;',
     '    *) continue ;;',
     '  esac',
+    '  [ -L "$f" ] && continue',
     '  [ -f "$f" ] || continue',
     '  cp -f -- "$f" "$dest/"',
     '  n=$((n+1))',
@@ -511,7 +534,7 @@ Item {
     // eye already is rather than on whatever sorts first.
     root.pendingFamily = faces[0].family
     root.status = "Installing " + group + "..."
-    var args = ["sh", "-c", root.installScript, "omafont-install", root.slug(group)]
+    var args = ["/bin/sh", "-c", root.installScript, "omafont-install", root.slug(group)]
     for (var i = 0; i < faces.length; i++) args.push(faces[i].file)
     installer.command = args
     installer.running = true
@@ -524,15 +547,26 @@ Item {
   // its folder behind.
   readonly property string removeScript: [
     'set -eu',
+    '# The shell process inherits a PATH with user-writable directories ahead',
+    '# of /usr/bin, so every bare command name here would be substitutable.',
+    '# Pin it before running anything.',
+    'PATH=/usr/local/bin:/usr/bin:/bin',
+    'export PATH',
     'root="$HOME/.local/share/fonts"',
     '[ -d "$root" ] || exit 0',
     'for f in "$@"; do',
     '  case "$f" in "$root"/*) ;; *) echo "refused: outside user font directory" >&2; exit 2 ;; esac',
     '  case "$f" in *..*) echo "refused: bad path" >&2; exit 2 ;; esac',
+    '  # -f follows symlinks, so a link planted inside the font directory',
+    '  # would satisfy the prefix check while pointing anywhere. Require a',
+    '  # real file and refuse links outright.',
+    '  [ -L "$f" ] && continue',
     '  [ -f "$f" ] || continue',
     '  rm -f -- "$f"',
     'done',
-    'find "$root" -mindepth 1 -type d -empty -delete >/dev/null 2>&1 || true',
+    '# -P (the default) does not follow symlinks; stated explicitly because it',
+    '# is load-bearing here, not stylistic.',
+    'find -P "$root" -mindepth 1 -type d -empty -delete >/dev/null 2>&1 || true',
     'fc-cache -f >/dev/null 2>&1 || true'
   ].join("\n")
 
@@ -556,7 +590,7 @@ Item {
     if (!s || !s.user) return
     var home = Quickshell.env("HOME") || ""
     var userRoot = home + "/.local/share/fonts"
-    var args = ["sh", "-c", root.removeScript, "omafont-remove"]
+    var args = ["/bin/sh", "-c", root.removeScript, "omafont-remove"]
     for (var i = 0; i < s.files.length; i++)
       if (s.files[i].indexOf(userRoot + "/") === 0) args.push(s.files[i])
     if (args.length <= 4) return
@@ -582,7 +616,10 @@ Item {
     var s = root.selected
     if (!s || !s.mono) return
     root.pendingLabel = s.name
-    monoSetter.command = ["omarchy-font-set", s.name]
+    // omarchy-font-set lives under $OMARCHY_PATH/bin, which is not a standard
+    // prefix, so it is resolved from the environment rather than found on PATH
+    // -- and rather than hardcoded, which would break a non-default install.
+    monoSetter.command = [root.omarchyBin + "/omarchy-font-set", s.name]
     monoSetter.running = true
   }
 
@@ -598,13 +635,15 @@ Item {
 
   Process {
     id: pickerProbe
-    command: ["sh", "-c", "command -v zenity >/dev/null 2>&1"]
+    command: ["/bin/sh", "-c",
+              "PATH=/usr/local/bin:/usr/bin:/bin; export PATH; "
+              + "command -v zenity >/dev/null 2>&1"]
     onExited: function(code) { root.hasPicker = (code === 0) }
   }
 
   Process {
     id: picker
-    command: ["zenity", "--file-selection", "--multiple", "--separator=\n",
+    command: ["/usr/bin/zenity", "--file-selection", "--multiple", "--separator=\n",
               "--title=Choose fonts, a folder, or a zip",
               "--file-filter=Fonts and archives | *.ttf *.otf *.ttc *.zip *.TTF *.OTF *.TTC *.ZIP",
               "--file-filter=All files | *"]
@@ -632,6 +671,11 @@ Item {
   // so a hostile archive's ../.. entries are inert.
   readonly property string stagePrepScript: [
     'set -eu',
+    '# The shell process inherits a PATH with user-writable directories ahead',
+    '# of /usr/bin, so every bare command name here would be substitutable.',
+    '# Pin it before running anything.',
+    'PATH=/usr/local/bin:/usr/bin:/bin',
+    'export PATH',
     '# A shell plugin runs inside the shell process, and the extract target is',
     '# $XDG_RUNTIME_DIR -- tmpfs, i.e. RAM. An unbounded extract there does not',
     '# break this panel, it takes the desktop session down. A 204KB archive can',
@@ -656,9 +700,11 @@ Item {
     '        exit 3',
     '      fi',
     '      if [ -z "$work" ]; then',
-    '        work="${XDG_RUNTIME_DIR:-/tmp}/omafont-stage-$$"',
-    '        rm -rf -- "$work"',
-    '        mkdir -p -- "$work"',
+    '        # mktemp -d, not a $$-derived name: $$ is predictable, so the',
+    '        # rm -rf/mkdir pair it needed could be raced or redirected through',
+    '        # a symlink planted at that path. mktemp creates the directory',
+    '        # itself, exclusively, mode 700, with a random name.',
+    '        work=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/omafont-stage-XXXXXXXXXX") || exit 2',
     '        printf "TEMP %s\\n" "$work"',
     '      fi',
     '      # Backgrounded and waited on deliberately: a POSIX shell defers traps',
@@ -710,7 +756,7 @@ Item {
         if (!targets.length) return
         // fc-scan walks several paths in one pass, so a multi-file drop costs
         // the same as a single one.
-        var cmd = ["sh", "-c", root.boundedFcScanScript, "omafont-stagescan",
+        var cmd = ["/bin/sh", "-c", root.boundedFcScanScript, "omafont-stagescan",
                    "%{family[0]}\t%{style[0]}\t%{file}\n", String(root.scanCap + 1)]
         stageScan.command = cmd.concat(targets)
         stageScan.running = true
@@ -779,9 +825,16 @@ Item {
   // script re-checks that rather than trusting the caller.
   readonly property string cleanTempScript: [
     'set -eu',
+    '# The shell process inherits a PATH with user-writable directories ahead',
+    '# of /usr/bin, so every bare command name here would be substitutable.',
+    '# Pin it before running anything.',
+    'PATH=/usr/local/bin:/usr/bin:/bin',
+    'export PATH',
     'd="$1"',
     '[ -n "$d" ] || exit 0',
     'case "$d" in */omafont-stage-*) ;; *) exit 0 ;; esac',
+    '# Refuse to follow a symlink standing where our temp dir should be.',
+    '[ -L "$d" ] && exit 0',
     'case "$d" in *..*) exit 0 ;; esac',
     '[ -d "$d" ] || exit 0',
     'rm -rf -- "$d"'
@@ -796,7 +849,7 @@ Item {
     if (stagePrep.running) stagePrep.running = false
     if (stageScan.running) stageScan.running = false
     if (root.stagedTemp) {
-      Quickshell.execDetached(["sh", "-c", root.cleanTempScript,
+      Quickshell.execDetached(["/bin/sh", "-c", root.cleanTempScript,
                                "omafont-cleanup", root.stagedTemp])
       root.stagedTemp = ""
     }
@@ -830,14 +883,13 @@ Item {
       ? clean[0].split("/").pop()
       : clean.length + " items"
     root.status = "Reading " + root.stagedSource + "..."
-    var cmd = ["sh", "-c", root.stagePrepScript, "omafont-stage"]
+    var cmd = ["/bin/sh", "-c", root.stagePrepScript, "omafont-stage"]
     stagePrep.command = cmd.concat(clean)
     stagePrep.running = true
   }
 
   function open(payloadJson) {
     root.opened = true
-    root.ensureSelfReference()
     root.status = ""
     root.filter = ""
     pickerProbe.running = true
@@ -887,31 +939,6 @@ Item {
   function toggle() {
     if (root.opened) root.close()
     else root.open("{}")
-  }
-
-  // ---- Self-reference ----------------------------------------------------
-  // A plugin declaring bar-widget PLUS panel needs its own plugins[] entry or
-  // the IPC shortcut dies with the bar icon. Claim one on first open --
-  // idempotent, written through a temp file, inert once an entry exists.
-  // Harness: sh -c <script> plugin-selfref <id> -- $0 is the label, $1 the id.
-  property bool selfRefEnsured: false
-  readonly property string ensureSelfRefScript: [
-    'id="$1"',
-    'f="$HOME/.config/omarchy/shell.json"',
-    '[ -f "$f" ] || exit 0',
-    'jq -e --arg id "$id" \'any(.plugins[]?; (.id // empty) == $id)\' "$f" >/dev/null && exit 0',
-    'tmp="$f.selfref.$$"',
-    'jq --arg id "$id" \'.plugins = ((.plugins // []) + [{id: $id}])\' "$f" > "$tmp" || {',
-    '  rm -f "$tmp"; exit 1;',
-    '}',
-    '[ -s "$tmp" ] || { rm -f "$tmp"; exit 1; }',
-    'mv "$tmp" "$f"'
-  ].join("\n")
-
-  function ensureSelfReference() {
-    if (root.selfRefEnsured) return
-    root.selfRefEnsured = true
-    Quickshell.execDetached(["sh", "-c", root.ensureSelfRefScript, "plugin-selfref", root.selfId])
   }
 
   // ---- UI ----------------------------------------------------------------

@@ -1,3 +1,4 @@
+import Quickshell
 import QtQuick
 import qs.Commons
 import qs.Ui
@@ -8,6 +9,9 @@ import qs.Ui
 BarWidget {
   id: root
   moduleName: "nosignal.omafont"
+
+  property string omarchyPath: Quickshell.env("OMARCHY_PATH") || "/usr/share/omarchy"
+  readonly property string omarchyBin: root.omarchyPath + "/bin"
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -23,7 +27,9 @@ BarWidget {
     fixedHeight: root.bar && root.bar.vertical ? Style.space(26) : -1
     onPressed: function(b) {
       if (!root.bar) return
-      root.bar.run("omarchy-shell shell toggle nosignal.omafont")
+      // Absolute: the shell's PATH carries user-writable directories ahead of
+      // /usr/bin, so a bare command name here would be substitutable.
+      root.bar.run(root.omarchyBin + "/omarchy-shell shell toggle nosignal.omafont")
     }
   }
 }

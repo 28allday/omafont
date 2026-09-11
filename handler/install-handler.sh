@@ -2,6 +2,12 @@
 # Register the double-click handler. Optional -- the panel works without it.
 set -eu
 
+# Pin PATH before running anything: a login PATH can carry user-writable
+# directories ahead of /usr/bin, which would make every bare command name below
+# substitutable.
+PATH=/usr/local/bin:/usr/bin:/bin
+export PATH
+
 bindir="${XDG_BIN_HOME:-$HOME/.local/bin}"
 appdir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
