@@ -678,6 +678,90 @@ Item {
   // for a click.
   property bool autoInstall: false
 
+  // ---- Live preview of a remote font -------------------------------------
+  // One face, about 50KB, cached on disk. Fetched when a family is selected,
+  // because "see it before you install it" is the whole premise of the panel
+  // and a name rendered in the UI font tells you nothing about the font.
+  property string browsePreviewFor: ""
+
+  function normaliseName(n) {
+    return String(n).toLowerCase().replace(/[^a-z0-9]/g, "")
+  }
+
+  // Nerd Fonts publish faces only inside their release archives, so there is
+  // nothing small to fetch. Most are patched versions of a font Fontsource
+  // already carries, though -- the letterforms are identical and the patch
+  // adds icon glyphs -- so the base font is an honest preview if it is
+  // labelled as one. 33 of 73 families have such a base.
+  readonly property var nerdBaseMap: {
+    var byName = ({})
+    for (var i = 0; i < root.catalogue.length; i++)
+      byName[root.normaliseName(root.catalogue[i].family)] = root.catalogue[i]
+    var m = ({})
+    for (var j = 0; j < root.nerdFonts.length; j++) {
+      var base = byName[root.normaliseName(root.nerdFonts[j].family)]
+      if (base) m[root.nerdFonts[j].id] = base
+    }
+    return m
+  }
+
+  readonly property var browsePreviewBase: {
+    var sel = root.browseSelected
+    if (!sel) return null
+    if (sel.source !== "nerd") return sel
+    return root.nerdBaseMap[sel.id] || null
+  }
+
+  readonly property bool browsePreviewIsBase: {
+    var sel = root.browseSelected
+    return sel !== null && sel.source === "nerd" && root.browsePreviewBase !== null
+  }
+
+  Process {
+    id: previewDownload
+    onExited: function(code) {
+      if (code === 0 && root.browsePreviewFor)
+        root.browsePreviewFile = root.pendingPreviewPath
+    }
+  }
+
+  property string pendingPreviewPath: ""
+
+  function previewBrowseFont() {
+    var base = root.browsePreviewBase
+    // Already showing this one -- the signal can fire again when the catalogue
+    // is reassigned, and refetching on every such tick would be wasteful.
+    if (base && base.id === root.browsePreviewFor && root.browsePreviewFile !== "") return
+    root.browsePreviewFile = ""
+    if (!base) { root.browsePreviewFor = ""; return }
+    // Prefer the regular weight; fall back to whatever the family starts at.
+    var w = base.weights.indexOf(400) >= 0 ? 400 : base.weights[0]
+    var st = base.styles.indexOf("normal") >= 0 ? "normal" : base.styles[0]
+    if (!w || !st) { root.browsePreviewFor = ""; return }
+    var dir = root.cacheRoot + "/preview"
+    root.browsePreviewFor = base.id
+    root.pendingPreviewPath = dir + "/" + base.id + "-" + base.subset + "-" + w + "-" + st + ".ttf"
+    previewDownload.command = ["sh", "-c", root.downloadScript, "omafont-preview",
+                               dir, base.id, base.subset, String(w), String(st)]
+    previewDownload.running = true
+  }
+
+  // Keyed off the RESOLVED base, not the selection: a deep link sets the
+  // selection before the catalogue has arrived, so a handler on the id alone
+  // runs once against an empty list and never again.
+  onBrowsePreviewBaseChanged: root.previewBrowseFont()
+
+  Loader {
+    id: browseFontHost
+    active: root.browsePreviewFile !== ""
+    sourceComponent: FontLoader { source: "file://" + root.browsePreviewFile }
+  }
+
+  readonly property string browsePreviewFamily: {
+    if (!browseFontHost.item) return ""
+    return browseFontHost.item.name || ""
+  }
+
   readonly property string cacheRoot: (Quickshell.env("XDG_CACHE_HOME") || (Quickshell.env("HOME") + "/.cache")) + "/omafont"
 
   function loadBrowse() {
@@ -2382,6 +2466,69 @@ Item {
                     label: root.browseSelected ? root.mib(root.browseSelected.bytes) : ""
                     tint: root.foreground
                   }
+                }
+
+                // Live specimen, rendered from the face actually fetched.
+                Column {
+                  width: parent.width
+                  spacing: Style.spacing.md
+                  visible: root.browsePreviewFamily !== ""
+
+                  Text {
+                    width: parent.width
+                    textFormat: Text.PlainText
+                    visible: root.browsePreviewIsBase
+                    text: "PREVIEWING THE UNPATCHED BASE FONT"
+                    color: root.foreground
+                    opacity: 0.35
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    font.letterSpacing: 1
+                  }
+
+                  Repeater {
+                    model: [40, 26, 17]
+
+                    Text {
+                      required property int modelData
+                      width: parent ? parent.width : 0
+                      elide: Text.ElideRight
+                      textFormat: Text.PlainText
+                      text: root.sample
+                      color: root.foreground
+                      font.family: root.browsePreviewFamily
+                      font.pixelSize: Style.space(modelData)
+                    }
+                  }
+
+                  Text {
+                    width: parent.width
+                    wrapMode: Text.WrapAnywhere
+                    textFormat: Text.PlainText
+                    text: "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789"
+                    color: root.foreground
+                    opacity: 0.7
+                    font.family: root.browsePreviewFamily
+                    font.pixelSize: Style.space(15)
+                    lineHeight: 1.4
+                  }
+                }
+
+                // Why there is no specimen, when there is not one.
+                Text {
+                  width: parent.width
+                  wrapMode: Text.WordWrap
+                  textFormat: Text.PlainText
+                  visible: root.browsePreviewFamily === "" && root.browseSelected !== null
+                  text: root.browseSelected && root.browseSelected.source === "nerd"
+                        && !root.browsePreviewBase
+                        ? "No preview: Nerd Fonts are published only inside their release archives, and this one has no unpatched base font on Fontsource."
+                        : "Fetching a sample face..."
+                  color: root.foreground
+                  opacity: 0.4
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
                 }
 
                 Text {
