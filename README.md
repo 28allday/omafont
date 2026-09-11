@@ -9,7 +9,7 @@ added.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/OWNER/REPO --enable
+omarchy plugin add https://github.com/28allday/omafont --enable
 ```
 
 An **Aa** icon appears in the bar. Click it, or bind a key to:
