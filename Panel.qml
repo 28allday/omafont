@@ -54,9 +54,16 @@ Item {
   property string fontFamily: Style.font.menuFamily
   property int contentMargin: Style.spacing.panelPadding
   property int contentSpacing: Style.spacing.lg
-  readonly property int railWidth: Style.space(230)
-  readonly property int rowH: Style.font.body + Style.spacing.sm
-  readonly property int headerH: Style.font.title + Style.spacing.md
+  readonly property int railWidth: Style.space(250)
+  readonly property int rowH: Style.space(26)
+  readonly property int headerH: Style.font.heading + Style.spacing.lg
+
+  // Specimen sizes, largest first. Labelled in a left gutter so the pane reads
+  // as a type specimen rather than four unexplained repetitions of a sentence.
+  readonly property var specimenSizes: [48, 32, 22, 16, 12]
+
+  readonly property string defaultSample: "The quick brown fox jumps over the lazy dog"
+  property string sample: root.defaultSample
 
   // ---- Model -------------------------------------------------------------
   // families: [{ name, styles: [..], files: [..], user: bool, mono: bool }]
@@ -171,6 +178,39 @@ Item {
     source: root.previewFile ? "file://" + root.previewFile : ""
   }
 
+  // Families that can actually set Latin text, per fontconfig's own language
+  // coverage. Only these get their name drawn in their own face in the list:
+  // an icon font or a Tamil font would otherwise render "Font Awesome 7 Free"
+  // as a row of unrelated symbols, which reads as a rendering bug. Matters
+  // most with coverage fonts shown, where ~300 such rows would be unreadable.
+  //
+  // Not perfect: the legacy PostScript symbol faces (Dingbats, Symbol) map
+  // their glyphs onto ASCII codepoints, so fontconfig credits them with
+  // English and they still self-describe in symbols. That is arguably the
+  // honest result -- you can see at a glance what kind of font it is.
+  property var latinFamilies: ({})
+
+  Process {
+    id: latinScanner
+    command: ["fc-list", ":lang=en", "--format", "%{family[0]}\n"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var map = ({})
+        var lines = this.text.split("\n")
+        var cap = Math.min(lines.length, 40000)
+        for (var i = 0; i < cap; i++) {
+          var n = lines[i].trim()
+          if (n) map[n] = true
+        }
+        root.latinFamilies = map
+      }
+    }
+  }
+
+  function setsLatin(name) {
+    return root.latinFamilies[name] === true
+  }
+
   // ---- Scan --------------------------------------------------------------
   // One fc-list pass gives family, style, path and spacing. spacing 100 is
   // fontconfig's mono flag, which is what gates "Set as terminal font".
@@ -234,6 +274,7 @@ Item {
   function refresh() {
     if (root.scanning) return
     root.scanning = true
+    latinScanner.running = true
     scanner.running = true
   }
 
@@ -494,7 +535,7 @@ Item {
 
     BorderSurface {
       id: card
-      width: Math.min(Style.space(880), panel.width - Style.gapsOut * 2)
+      width: Math.min(Style.space(940), panel.width - Style.gapsOut * 2)
       height: Math.max(0, Math.min(panel.height * 0.8, panel.height - Style.gapsOut * 2))
       radius: root.cornerRadius
       anchors.centerIn: parent
@@ -518,6 +559,28 @@ Item {
         }
       }
 
+      // A small caption-sized label on a tinted ground. Used for provenance,
+      // style count and the monospace flag, so the metadata row reads as data
+      // rather than as a run-on sentence.
+      component Chip: Rectangle {
+        property string label: ""
+        property color tint: root.foreground
+        implicitWidth: chipText.implicitWidth + Style.spacing.md * 2
+        implicitHeight: chipText.implicitHeight + Style.spacing.xs * 2
+        radius: height / 2
+        color: Qt.rgba(tint.r, tint.g, tint.b, 0.14)
+
+        Text {
+          id: chipText
+          anchors.centerIn: parent
+          text: parent.label
+          color: parent.tint
+          textFormat: Text.PlainText
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
+
       Item {
         id: keyCatcher
         anchors.fill: parent
@@ -526,20 +589,17 @@ Item {
           if (event.key === Qt.Key_Escape) {
             root.close()
             event.accepted = true
-          } else if (event.key === Qt.Key_Q && !filterField.activeFocus) {
+          } else if (event.key === Qt.Key_Q && !filterField.activeFocus && !sampleField.activeFocus) {
             root.close()
             event.accepted = true
-          } else if (event.key === Qt.Key_Slash && !filterField.activeFocus) {
+          } else if (event.key === Qt.Key_Slash && !filterField.activeFocus && !sampleField.activeFocus) {
             filterField.forceActiveFocus()
             event.accepted = true
-          } else if ((event.key === Qt.Key_R || event.key === Qt.Key_F5) && !filterField.activeFocus) {
+          } else if ((event.key === Qt.Key_R || event.key === Qt.Key_F5)
+                     && !filterField.activeFocus && !sampleField.activeFocus) {
             root.refresh()
             event.accepted = true
           } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            // Enter installs a staged font. The staged state is the one moment
-            // the panel has an obvious default action, and arriving here from a
-            // double-click in the file manager means the hands are not on the
-            // mouse anyway.
             if (root.stagedPath) {
               root.installStaged()
               event.accepted = true
@@ -559,25 +619,27 @@ Item {
         anchors.rightMargin: card.contentRightInset
         spacing: root.contentSpacing
 
-        // Header
+        // ---- Header ----
         Item {
           width: parent.width
           height: root.headerH
 
           Text {
+            id: titleText
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             text: "Fonts"
             color: root.foreground
             font.family: root.fontFamily
-            font.pixelSize: Style.font.title
+            font.pixelSize: Style.font.heading
             font.bold: true
           }
 
           Text {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            width: parent.width - Style.space(90)
+            anchors.left: titleText.right
+            anchors.leftMargin: Style.spacing.lg
             horizontalAlignment: Text.AlignRight
             elide: Text.ElideMiddle
             textFormat: Text.PlainText
@@ -590,18 +652,20 @@ Item {
               return root.families.length + " families"
             }
             color: root.status !== "" ? root.accent : root.foreground
-            opacity: root.status !== "" ? 1.0 : 0.5
+            opacity: root.status !== "" ? 1.0 : 0.45
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
           }
         }
 
+        // ---- Body: rail | divider | preview ----
         Row {
+          id: body
           width: parent.width
-          height: parent.height - root.headerH - root.contentSpacing * 2 - actions.height
+          height: parent.height - root.headerH - actions.height - divider.height
+                  - root.contentSpacing * 3
           spacing: root.contentSpacing
 
-          // ---- Left rail: filter + grouped family list ----
           Column {
             width: root.railWidth
             height: parent.height
@@ -610,7 +674,7 @@ Item {
             TextField {
               id: filterField
               width: parent.width
-              placeholderText: "Filter..."
+              placeholderText: "Filter fonts"
               foreground: root.foreground
               accent: root.accent
               onTextChanged: root.filter = text
@@ -633,13 +697,14 @@ Item {
             Item {
               id: coverageBar
               width: parent.width
-              height: root.coverageCount > 0 ? coverageLabel.implicitHeight : 0
+              height: root.coverageCount > 0 ? coverageLabel.implicitHeight + Style.spacing.xs : 0
               visible: root.coverageCount > 0
 
               Text {
                 id: coverageLabel
                 anchors.left: parent.left
                 anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
                 elide: Text.ElideRight
                 textFormat: Text.PlainText
                 text: root.filter !== ""
@@ -648,13 +713,15 @@ Item {
                          ? root.coverageCount + " language fonts hidden · show"
                          : "showing all · hide language fonts")
                 color: root.filter !== "" ? root.foreground : root.accent
-                opacity: root.filter !== "" ? 0.4 : 0.75
+                opacity: root.filter !== "" ? 0.4 : (coverageMouse.containsMouse ? 1.0 : 0.7)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
               }
 
               MouseArea {
+                id: coverageMouse
                 anchors.fill: parent
+                hoverEnabled: true
                 enabled: root.filter === ""
                 cursorShape: Qt.PointingHandCursor
                 onClicked: root.hideCoverage = !root.hideCoverage
@@ -676,44 +743,62 @@ Item {
                 required property var modelData
                 readonly property bool isHeader: modelData.header === true
                 readonly property var fam: rowItem.isHeader ? null : modelData.fam
+                readonly property bool isSelected: !rowItem.isHeader
+                                                   && rowItem.fam.name === root.selectedName
 
                 width: list.width
-                height: rowItem.isHeader ? root.rowH + Style.spacing.sm : root.rowH
+                height: rowItem.isHeader ? root.rowH + Style.spacing.md : root.rowH
 
                 // Section header
                 Text {
                   visible: rowItem.isHeader
                   anchors.left: parent.left
                   anchors.bottom: parent.bottom
-                  anchors.bottomMargin: Style.spacing.xxs
+                  anchors.bottomMargin: Style.spacing.xs
                   textFormat: Text.PlainText
                   text: rowItem.isHeader
-                        ? rowItem.modelData.label + " (" + rowItem.modelData.count + ")"
+                        ? rowItem.modelData.label.toUpperCase() + "  " + rowItem.modelData.count
                         : ""
                   color: root.foreground
-                  opacity: 0.5
+                  opacity: 0.35
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   font.bold: true
+                  font.letterSpacing: 1
                 }
 
                 // Family row
                 Rectangle {
                   visible: !rowItem.isHeader
                   anchors.fill: parent
+                  anchors.rightMargin: Style.spacing.xxs
                   radius: Math.max(2, Style.space(4))
                   color: {
                     if (rowItem.isHeader) return "transparent"
-                    if (rowItem.fam.name === root.selectedName)
-                      return Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
-                    if (rowMouse.containsMouse)
-                      return Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
+                    if (rowItem.isSelected) return Style.selectedAccentFill
+                    if (rowMouse.containsMouse) return Style.hoverFill
                     return "transparent"
                   }
 
+                  // Accent spine on the selected row: reads at a glance in a
+                  // long list where the fill alone is subtle.
+                  Rectangle {
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: Style.space(2)
+                    radius: width
+                    color: root.accent
+                    visible: rowItem.isSelected
+                  }
+
+                  // The name set in its own face. This is the whole point of a
+                  // font list -- reading "Nimbus Roman" in Times tells you more
+                  // than any label could. Installed families are already known
+                  // to Qt, so no FontLoader is needed per row.
                   Text {
                     anchors.left: parent.left
-                    anchors.leftMargin: Style.spacing.sm
+                    anchors.leftMargin: Style.spacing.md
                     anchors.right: monoTag.left
                     anchors.rightMargin: Style.spacing.xs
                     anchors.verticalCenter: parent.verticalCenter
@@ -721,29 +806,40 @@ Item {
                     textFormat: Text.PlainText
                     text: rowItem.isHeader ? "" : rowItem.fam.name
                     color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
+                    opacity: rowItem.isSelected ? 1.0 : 0.85
+                    font.family: (!rowItem.isHeader && root.setsLatin(rowItem.fam.name))
+                                 ? rowItem.fam.name : root.fontFamily
+                    font.pixelSize: Style.font.subtitle
                   }
 
                   // Monospace marker -- the only families "Set as terminal
                   // font" will accept, so it is worth showing in the list.
-                  Text {
+                  Rectangle {
                     id: monoTag
                     anchors.right: parent.right
                     anchors.rightMargin: Style.spacing.sm
                     anchors.verticalCenter: parent.verticalCenter
                     visible: !rowItem.isHeader && rowItem.fam.mono
-                    text: "M"
-                    color: root.accent
-                    opacity: 0.7
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
+                    width: Style.space(14)
+                    height: Style.space(14)
+                    radius: Style.space(3)
+                    color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
+
+                    Text {
+                      anchors.centerIn: parent
+                      text: "M"
+                      color: root.accent
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                    }
                   }
 
                   MouseArea {
                     id: rowMouse
                     anchors.fill: parent
                     hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
                     onClicked: {
                       if (rowItem.isHeader) return
                       root.stagedPath = ""
@@ -756,34 +852,50 @@ Item {
             }
           }
 
-          // ---- Right: preview ----
+          // Rail/preview separator.
+          Rectangle {
+            width: 1
+            height: parent.height
+            color: root.foreground
+            opacity: 0.12
+          }
+
+          // ---- Preview ----
           Item {
-            width: parent.width - root.railWidth - root.contentSpacing
+            width: parent.width - root.railWidth - root.contentSpacing * 2 - 1
             height: parent.height
 
             // Empty state
             Column {
               anchors.centerIn: parent
-              width: parent.width - Style.space(40)
-              spacing: Style.spacing.sm
+              width: parent.width - Style.space(60)
+              spacing: Style.spacing.md
               visible: !root.selected && !root.stagedPath
 
+              Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "Aa"
+                color: root.foreground
+                opacity: 0.16
+                font.family: root.fontFamily
+                font.pixelSize: Style.space(56)
+              }
               Text {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 text: "Pick a font to preview it"
                 color: root.foreground
-                opacity: 0.6
+                opacity: 0.55
                 font.family: root.fontFamily
-                font.pixelSize: Style.font.body
+                font.pixelSize: Style.font.subtitle
               }
               Text {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
-                text: "Drop a .ttf or .otf here -- or double-click one in your file manager -- to preview it before installing."
+                text: "Drop a .ttf or .otf here, or double-click one in your file manager, to preview it before installing."
                 color: root.foreground
-                opacity: 0.4
+                opacity: 0.35
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
               }
@@ -799,60 +911,99 @@ Item {
               Column {
                 id: preview
                 width: parent.width
-                spacing: Style.spacing.md
+                spacing: Style.spacing.lg
 
-                // Name + provenance
-                Column {
+                // Name, set in its own face at display size.
+                Text {
                   width: parent.width
-                  spacing: Style.spacing.xxs
+                  elide: Text.ElideRight
+                  textFormat: Text.PlainText
+                  text: root.previewFamily
+                  color: root.foreground
+                  // Staged fonts are not in fontconfig's index yet, so they are
+                  // always drawn in their own face -- seeing the thing you are
+                  // about to install is the entire point of the staged state.
+                  font.family: (root.stagedPath || root.setsLatin(root.previewFamily))
+                               ? root.previewFamily : root.fontFamily
+                  font.pixelSize: Style.space(34)
+                }
 
-                  Text {
-                    width: parent.width
-                    elide: Text.ElideRight
-                    textFormat: Text.PlainText
-                    text: root.previewFamily
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.title
-                    font.bold: true
+                // Metadata as chips rather than a dot-joined sentence.
+                Flow {
+                  width: parent.width
+                  spacing: Style.spacing.sm
+
+                  Chip {
+                    visible: root.stagedPath !== ""
+                    label: root.stagedInstalled ? "family already installed" : "not installed"
+                    tint: root.accent
                   }
-
-                  Text {
-                    width: parent.width
-                    elide: Text.ElideRight
-                    textFormat: Text.PlainText
-                    text: {
-                      if (root.stagedPath)
-                        return "Not installed -- " + root.stagedName
-                               + (root.stagedInstalled ? " (family already installed)" : "")
-                      var s = root.selected
-                      if (!s) return ""
-                      return (s.user ? "Yours" : "System")
-                             + " -- " + s.styles.length + " style" + (s.styles.length === 1 ? "" : "s")
-                             + (s.mono ? " -- monospace" : "")
-                    }
-                    color: root.stagedPath ? root.accent : root.foreground
-                    opacity: root.stagedPath ? 1.0 : 0.5
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
+                  Chip {
+                    visible: root.stagedPath === "" && root.selected !== null
+                    label: root.selected && root.selected.user ? "yours" : "system"
+                    tint: root.selected && root.selected.user ? root.accent : root.foreground
+                  }
+                  Chip {
+                    visible: root.stagedPath === "" && root.selected !== null
+                    label: root.selected
+                           ? root.selected.styles.length + (root.selected.styles.length === 1 ? " style" : " styles")
+                           : ""
+                    tint: root.foreground
+                  }
+                  Chip {
+                    visible: root.stagedPath === "" && root.selected !== null && root.selected.mono
+                    label: "monospace"
+                    tint: root.foreground
+                  }
+                  Chip {
+                    visible: root.stagedPath !== ""
+                    label: root.stagedName
+                    tint: root.foreground
                   }
                 }
 
-                // Specimen. Rendered from the loaded file, so a font installed
-                // a second ago previews correctly even though Qt's family list
-                // was snapshotted at shell start.
-                Repeater {
-                  model: [Style.space(34), Style.space(24), Style.space(17), Style.space(13)]
+                // Editable specimen text. A font is chosen against the words it
+                // will actually set, so the pangram is a starting point, not a
+                // fixed exhibit.
+                TextField {
+                  id: sampleField
+                  width: parent.width
+                  placeholderText: root.defaultSample
+                  foreground: root.foreground
+                  accent: root.accent
+                  verticalPadding: Style.spacing.xs
+                  onTextChanged: root.sample = text.length ? text : root.defaultSample
+                }
 
-                  Text {
+                // Specimen, size-labelled in a left gutter.
+                Repeater {
+                  model: root.specimenSizes
+
+                  Row {
                     required property int modelData
                     width: preview.width
-                    elide: Text.ElideRight
-                    textFormat: Text.PlainText
-                    text: "The quick brown fox jumps over the lazy dog"
-                    color: root.foreground
-                    font.family: root.previewFamily
-                    font.pixelSize: modelData
+                    spacing: Style.spacing.md
+
+                    Text {
+                      width: Style.space(22)
+                      anchors.verticalCenter: parent.verticalCenter
+                      horizontalAlignment: Text.AlignRight
+                      text: parent.modelData
+                      color: root.foreground
+                      opacity: 0.3
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+
+                    Text {
+                      width: parent.width - Style.space(22) - Style.spacing.md
+                      elide: Text.ElideRight
+                      textFormat: Text.PlainText
+                      text: root.sample
+                      color: root.foreground
+                      font.family: root.previewFamily
+                      font.pixelSize: Style.space(parent.modelData)
+                    }
                   }
                 }
 
@@ -860,7 +1011,7 @@ Item {
                   width: parent.width
                   height: 1
                   color: root.foreground
-                  opacity: 0.15
+                  opacity: 0.12
                 }
 
                 Text {
@@ -869,27 +1020,38 @@ Item {
                   textFormat: Text.PlainText
                   text: "ABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz\n0123456789  &@#$%*()[]{}/\\ <>?!.,;:'\"-+="
                   color: root.foreground
-                  opacity: 0.85
+                  opacity: 0.7
                   font.family: root.previewFamily
-                  font.pixelSize: Style.space(16)
-                  lineHeight: 1.35
+                  font.pixelSize: Style.space(15)
+                  lineHeight: 1.4
                 }
 
-                // Styles in the family
-                Text {
+                // Styles in the family, as chips.
+                Flow {
                   width: parent.width
-                  wrapMode: Text.WordWrap
-                  textFormat: Text.PlainText
+                  spacing: Style.spacing.xs
                   visible: !root.stagedPath && root.selected && root.selected.styles.length > 0
-                  text: root.selected ? root.selected.styles.join("  ·  ") : ""
-                  color: root.foreground
-                  opacity: 0.45
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
+
+                  Repeater {
+                    model: root.selected ? root.selected.styles : []
+                    Chip {
+                      required property string modelData
+                      label: modelData
+                      tint: root.foreground
+                    }
+                  }
                 }
               }
             }
           }
+        }
+
+        Rectangle {
+          id: divider
+          width: parent.width
+          height: 1
+          color: root.foreground
+          opacity: 0.12
         }
 
         // ---- Actions ----
@@ -914,7 +1076,6 @@ Item {
 
             Button {
               text: "Cancel"
-              bordered: true
               visible: root.stagedPath !== ""
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -934,7 +1095,7 @@ Item {
               text: "Set as terminal font"
               bordered: true
               visible: root.stagedPath === "" && root.selected !== null && root.selected.mono
-              foreground: root.foreground
+              foreground: root.accent
               fontFamily: root.fontFamily
               onClicked: root.setAsMono()
             }
@@ -944,7 +1105,6 @@ Item {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             text: "Remove"
-            bordered: true
             visible: root.stagedPath === "" && root.selected !== null && root.selected.user
             foreground: root.urgent
             fontFamily: root.fontFamily
