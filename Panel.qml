@@ -465,6 +465,15 @@ Item {
   property string pendingSelect: ""
 
   onFamiliesChanged: {
+    // Land on a real font rather than an empty pane. A font manager whose
+    // first screen is 60% void is showing you nothing you came for, and the
+    // specimen is the whole point of the panel.
+    if (!root.pendingSelect && !root.selectedName && !root.stagedPath) {
+      var rows = root.rows
+      for (var r = 0; r < rows.length; r++) {
+        if (rows[r].header !== true) { root.selectedName = rows[r].fam.name; break }
+      }
+    }
     if (root.pendingSelect) {
       for (var i = 0; i < root.families.length; i++) {
         if (root.families[i].name === root.pendingSelect) {
@@ -1060,7 +1069,13 @@ Item {
             width: root.railWidth
             height: parent.height
             radius: Math.max(2, Style.space(6))
-            color: Style.normalFill
+            // Fill alone is not enough: the kit's normalFill is ~4% alpha and
+            // at true scale it is invisible against the card. The hairline
+            // border is what actually separates the two surfaces, and it reads
+            // in any theme because it tracks the foreground.
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+            border.width: Style.spacing.hairline
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
 
             Column {
             anchors.fill: parent
@@ -1452,7 +1467,9 @@ Item {
                   width: parent.width
                   height: glyphs.implicitHeight + Style.spacing.lg * 2
                   radius: Math.max(2, Style.space(6))
-                  color: Style.normalFill
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+                  border.width: Style.spacing.hairline
+                  border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
 
                   Text {
                     id: glyphs
