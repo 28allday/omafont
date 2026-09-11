@@ -640,6 +640,7 @@ Item {
         root.tab = "installed"
         root.stage(root.browseTemp)
       } else {
+        root.autoInstall = false
         var m = faceDownload.stderr && faceDownload.stderr.text ? faceDownload.stderr.text.trim() : ""
         root.status = m ? m : "Download failed"
       }
@@ -662,6 +663,7 @@ Item {
         root.stage(root.pendingZip)
         root.pendingZip = ""
       } else {
+        root.autoInstall = false
         var m = zipDownload.stderr && zipDownload.stderr.text ? zipDownload.stderr.text.trim() : ""
         root.status = m ? m : "Download failed"
       }
@@ -669,6 +671,12 @@ Item {
   }
 
   property string pendingZip: ""
+
+  // Set when a download was started from Browse. Picking a family there is
+  // already a deliberate choice, so making someone confirm a second time is
+  // friction, not safety -- the staging step still runs, it just does not wait
+  // for a click.
+  property bool autoInstall: false
 
   readonly property string cacheRoot: (Quickshell.env("XDG_CACHE_HOME") || (Quickshell.env("HOME") + "/.cache")) + "/omafont"
 
@@ -690,6 +698,7 @@ Item {
   function downloadFaces(fam, faces) {
     if (!fam || !faces.length || root.browseBusy) return
     root.browseBusy = true
+    root.autoInstall = true
     root.status = "Downloading " + fam.family + "..."
     root.browseTemp = root.cacheRoot + "/dl/" + fam.id
     var args = ["sh", "-c", root.downloadScript, "omafont-download",
@@ -705,6 +714,7 @@ Item {
   function downloadNerd(fam) {
     if (!fam || root.browseBusy || !root.nerdTag) return
     root.browseBusy = true
+    root.autoInstall = true
     root.status = "Downloading " + fam.family + " (" + root.mib(fam.bytes) + ")..."
     zipDownload.command = ["sh", "-c", root.zipDownloadScript, "omafont-zip",
                            root.cacheRoot + "/dl", root.nerdTag, fam.asset,
@@ -848,6 +858,7 @@ Item {
     id: installer
     stderr: StdioCollector {}
     onExited: function(code) {
+      root.autoInstall = false
       if (code === 0) {
         root.status = "Installed " + root.pendingLabel + " -- restart an app to use it"
         root.clearStage()
@@ -1142,6 +1153,7 @@ Item {
         }
         if (!faces.length) {
           root.clearStage()
+          root.autoInstall = false
           root.status = "No installable fonts found in that"
           return
         }
@@ -1167,6 +1179,7 @@ Item {
         root.status = truncated
           ? "Showing the first " + faces.length + " fonts -- that source holds more"
           : ""
+        if (root.autoInstall) root.installStaged()
       }
     }
   }
@@ -1251,6 +1264,16 @@ Item {
       var payload = JSON.parse(payloadJson || "{}")
       if (payload && (payload.tab === "browse" || payload.tab === "installed"))
         root.tab = payload.tab
+      // Deep link: open Browse at a particular family, e.g. from a keybinding.
+      // Bounded and charset-checked like every other id that reaches us.
+      if (payload && typeof payload.select === "string"
+          && payload.select.length <= 128
+          && /^[A-Za-z0-9._-]+$/.test(payload.select)) {
+        root.tab = "browse"
+        if (payload.source === "nerd") root.browseSource = "nerd"
+        if (!root.browseLoaded) root.loadBrowse()
+        root.browseSelectedId = payload.select
+      }
       if (payload && payload.pick === true) { root.openPicker(); return }
       if (!payload || !payload.install) return
       var want = payload.install
@@ -2366,8 +2389,8 @@ Item {
                   wrapMode: Text.WordWrap
                   textFormat: Text.PlainText
                   text: root.browseSelected && root.browseSelected.source === "nerd"
-                        ? "Downloads the family archive, then previews every face it contains before anything is installed."
-                        : "Downloads the faces below, then previews them before anything is installed."
+                        ? "Downloads the family archive and installs every face it contains."
+                        : "Downloads and installs these faces into ~/.local/share/fonts."
                   color: root.foreground
                   opacity: 0.4
                   font.family: root.fontFamily
@@ -2379,11 +2402,13 @@ Item {
                   spacing: Style.spacing.sm
 
                   Button {
-                    text: root.browseSelected && root.browseSelected.source === "nerd"
-                          ? "Download " + root.mib(root.browseSelected.bytes)
-                          : "Download "
-                            + (root.browseSelected ? root.browseCoreFaces(root.browseSelected).length : 0)
-                            + " faces"
+                    text: root.browseBusy
+                          ? "Working..."
+                          : (root.browseSelected && root.browseSelected.source === "nerd"
+                             ? "Install (" + root.mib(root.browseSelected.bytes) + " download)"
+                             : "Install "
+                               + (root.browseSelected ? root.browseCoreFaces(root.browseSelected).length : 0)
+                               + " faces")
                     bordered: true
                     enabled: !root.browseBusy
                     opacity: root.browseBusy ? 0.5 : 1.0
@@ -2398,7 +2423,7 @@ Item {
                   }
 
                   Button {
-                    text: "Every weight"
+                    text: "Install every weight"
                     bordered: true
                     visible: root.browseSelected && root.browseSelected.source === "fontsource"
                     enabled: !root.browseBusy
