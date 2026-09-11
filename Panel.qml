@@ -261,7 +261,7 @@ Item {
   // Resolved family name to render with: whatever the FontLoader actually
   // produced, falling back to the fc-list name if the file would not load.
   readonly property string previewFamily: {
-    if (stagedLoader.name) return stagedLoader.name
+    if (root.loadedFamily) return root.loadedFamily
     return root.selected ? root.selected.name : ""
   }
 
@@ -272,9 +272,20 @@ Item {
     return root.previewFamily
   }
 
-  FontLoader {
-    id: stagedLoader
-    source: root.previewFile ? "file://" + root.previewFile : ""
+  // Wrapped in a Loader rather than bound straight to a possibly-empty source:
+  // FontLoader logs "Cannot load font" for an empty URL, and a panel that
+  // spams the shell log every time nothing is selected is a panel nobody will
+  // keep installed. Deactivating also drops the stale family name, so the
+  // heading cannot keep naming a font that is no longer staged.
+  Loader {
+    id: fontLoaderHost
+    active: root.previewFile !== ""
+    sourceComponent: FontLoader { source: "file://" + root.previewFile }
+  }
+
+  readonly property string loadedFamily: {
+    if (!fontLoaderHost.item) return ""
+    return fontLoaderHost.item.name || ""
   }
 
   // Families that can actually set Latin text, per fontconfig's own language
@@ -412,6 +423,11 @@ Item {
   readonly property string installScript: [
     'set -eu',
     'sub="$1"; shift',
+    '# Re-checked here rather than trusted from QML: a destination is a',
+    '# single path segment, never a path.',
+    'case "$sub" in',
+    '  ""|*/*|*..*) echo "bad destination" >&2; exit 2 ;;',
+    'esac',
     'dest="$HOME/.local/share/fonts/$sub"',
     'mkdir -p -- "$dest"',
     'n=0',
@@ -471,7 +487,7 @@ Item {
   function installStaged() {
     var faces = root.stagedSelected
     if (!faces.length) return
-    var group = root.stagedGroup || stagedLoader.name || "Custom"
+    var group = root.stagedGroup || root.loadedFamily || "Custom"
     root.pendingLabel = faces.length === 1
       ? group
       : group + " (" + faces.length + " fonts)"
@@ -619,7 +635,14 @@ Item {
     '        mkdir -p -- "$work"',
     '        printf "TEMP %s\\n" "$work"',
     '      fi',
-    '      timeout 60 unzip -j -qq -o "$src" \'*.ttf\' \'*.otf\' \'*.ttc\' \'*.TTF\' \'*.OTF\' \'*.TTC\' -d "$work" >/dev/null 2>&1 || true',
+    '      # Backgrounded and waited on deliberately: a POSIX shell defers traps',
+    '      # while a FOREGROUND child runs, so cancelling mid-extract would not',
+    '      # clean up until unzip finished anyway. With wait, the signal lands.',
+    '      timeout 60 unzip -j -qq -o "$src" \'*.ttf\' \'*.otf\' \'*.ttc\' \'*.TTF\' \'*.OTF\' \'*.TTC\' -d "$work" >/dev/null 2>&1 &',
+    '      upid=$!',
+    '      trap \'kill "$upid" 2>/dev/null; rm -rf -- "$work" 2>/dev/null; exit 143\' TERM INT HUP',
+    '      wait "$upid" || true',
+    '      trap - TERM INT HUP',
     '      # What actually landed, which is the number that can hurt.',
     '      used=$(du -sk "$work" 2>/dev/null | awk \'{print $1}\')',
     '      case "$used" in \'\'|*[!0-9]*) used=0 ;; esac',
@@ -738,6 +761,12 @@ Item {
   ].join("\n")
 
   function clearStage() {
+    // Stop the workers FIRST. Removing the temp tree while unzip is still
+    // writing into it just leaves a fresh one behind -- in RAM, since the
+    // extract target is tmpfs. The prep script also traps its own signals and
+    // cleans up, so this is belt and braces.
+    if (stagePrep.running) stagePrep.running = false
+    if (stageScan.running) stageScan.running = false
     if (root.stagedTemp) {
       Quickshell.execDetached(["sh", "-c", root.cleanTempScript,
                                "omafont-cleanup", root.stagedTemp])
