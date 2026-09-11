@@ -30,10 +30,18 @@ your file manager brings up the panel:
 
 ## Using it
 
-The left rail lists every font family on the machine, split into **Yours** —
-the ones in `~/.local/share/fonts`, which you can remove — and **System**,
-which belong to packages and are preview-only. Type to filter. An `M` marks a
-monospace family.
+The left rail lists your font families, split into **Yours** — the ones in
+`~/.local/share/fonts`, which you can remove — and **System**, which belong to
+packages and are preview-only. The filter takes focus as soon as the panel
+opens, so you can just start typing. An `M` marks a monospace family.
+
+**Language fonts are hidden by default.** A typical Arch install carries around
+300 Noto families — one per writing system, several widths each — which buries
+the forty or so fonts you would ever deliberately choose. They stay installed
+(your browser and terminal need them for Arabic, CJK, Hebrew and emoji); they
+are just folded out of the way. A line under the filter tells you how many are
+hidden and unfolds them with a click, and typing a filter searches all of them
+regardless — so `tamil` still finds the Tamil fonts.
 
 The right pane shows a specimen at four sizes plus the full alphabet and
 figures, rendered from the font file itself. That matters for a font you have
@@ -50,7 +58,8 @@ Buttons along the bottom, shown when they apply:
   Only ever touches `~/.local/share/fonts`; system fonts cannot be removed
   from here.
 
-Keys: `Esc` or `q` closes, `/` jumps to the filter, `r` rescans.
+Keys: `Esc` clears the filter, then closes. `Enter` installs a staged font.
+`r` rescans and `/` jumps to the filter when the filter is not focused.
 
 ## One thing to know
 
