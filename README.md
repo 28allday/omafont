@@ -68,6 +68,34 @@ Fonts land in `~/.local/share/fonts/<Family>/`. No password is needed.
 That is fontconfig, not this plugin — every font manager on Linux behaves this
 way. New windows pick it up immediately.
 
+## Browsing free fonts
+
+The **Browse** tab installs open-licence fonts without leaving the panel: about
+2100 families from [Fontsource](https://fontsource.org) — a repackaging of
+Google Fonts and friends, all under OFL, Apache, UFL, MIT or Unlicense — and
+the 73 family archives published by
+[Nerd Fonts](https://github.com/ryanoasis/nerd-fonts).
+
+**Nothing is downloaded until you ask for it.** Opening the panel fetches
+nothing at all. The Browse tab tells you what the two lists cost before you
+load them (roughly 600 KB, cached for a day), and no font is fetched until you
+pick one.
+
+Selecting a family fetches a single face, about 50 KB, and shows you a real
+specimen. Nerd Fonts publish their faces only inside the release archives, so
+there is nothing small to preview; where the family is a patched version of a
+font Fontsource also carries, the unpatched original is shown and labelled as
+such, and where it is not, the panel says so rather than showing you nothing.
+
+**Install** takes Regular, Bold and their italics — filtered to what the family
+actually ships — or **every weight** if you want the lot. Nerd Fonts download
+their whole archive; the size is on the row before you click.
+
+Fonts are fetched from `cdn.jsdelivr.net` and `github.com`, pinned to an exact
+published version rather than a moving `latest`, and anything that arrives has
+to parse as a font before it goes near your font directory. No request is made
+to Google.
+
 ## Removing fonts
 
 Select a family under **Yours** and click **Remove**. It deletes that family's
@@ -115,9 +143,11 @@ not touch them.
 | `unzip` | only to install from a `.zip` |
 | `zenity` | **optional** — adds the *Install from file…* button. Without it, use drag-and-drop or the double-click handler |
 
-No network access, and nothing runs with elevated privileges. The plugin writes
-only to `~/.local/share/fonts` and, if you register the handler, to
-`~/.local/bin` and `~/.local/share/applications`.
+Nothing runs with elevated privileges. The plugin writes only to
+`~/.local/share/fonts`, its own cache in `~/.cache/omafont`, and — if you
+register the handler — `~/.local/bin` and `~/.local/share/applications`.
+Network access is used only by the Browse tab, and only when you ask it to
+fetch something.
 
 ## Licence
 
