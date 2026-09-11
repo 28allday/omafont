@@ -1223,7 +1223,7 @@ Item {
 
           // Rail/preview separator.
           Rectangle {
-            width: 1
+            width: Style.spacing.hairline
             height: parent.height
             color: root.foreground
             opacity: 0.12
@@ -1426,7 +1426,7 @@ Item {
 
                 Rectangle {
                   width: parent.width
-                  height: 1
+                  height: Style.spacing.hairline
                   color: root.foreground
                   opacity: 0.12
                 }
@@ -1513,7 +1513,7 @@ Item {
         Rectangle {
           id: divider
           width: parent.width
-          height: 1
+          height: Style.spacing.hairline
           color: root.foreground
           opacity: 0.12
         }
