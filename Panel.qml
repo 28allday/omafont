@@ -572,6 +572,13 @@ Item {
   // ---- Optional file picker ----------------------------------------------
   // zenity is not a dependency: the button only appears if it is present, and
   // drag-and-drop plus the mime handler cover the same ground without it.
+  // The panel is a WlrLayer.Overlay surface with exclusive keyboard focus,
+  // which by design draws above every ordinary window -- so a file dialog
+  // opens BEHIND it and cannot take the keyboard. Hide the surface for as long
+  // as the picker is up, and bring it back with whatever was chosen. Lowering
+  // the layer instead would fix the stacking but not the focus.
+  property bool picking: false
+
   Process {
     id: pickerProbe
     command: ["sh", "-c", "command -v zenity >/dev/null 2>&1"]
@@ -593,6 +600,9 @@ Item {
         if (picked.length) root.stage(picked)
       }
     }
+    // onExited, not just the stdout handler: a cancelled dialog produces no
+    // output at all, and the panel must come back either way.
+    onExited: function(code) { root.picking = false }
   }
 
   // ---- Staging -----------------------------------------------------------
@@ -764,6 +774,7 @@ Item {
     // writing into it just leaves a fresh one behind -- in RAM, since the
     // extract target is tmpfs. The prep script also traps its own signals and
     // cleans up, so this is belt and braces.
+    root.picking = false
     if (stagePrep.running) stagePrep.running = false
     if (stageScan.running) stageScan.running = false
     if (root.stagedTemp) {
@@ -779,6 +790,12 @@ Item {
 
   // Accepts a single path or a list of them -- a dropped selection, a folder,
   // a zip, or any mix of those.
+  function openPicker() {
+    if (!root.hasPicker || root.picking) return
+    root.picking = true
+    picker.running = true
+  }
+
   function stage(paths) {
     if (!paths) return
     var list = (typeof paths === "string") ? [paths] : paths
@@ -818,6 +835,7 @@ Item {
     try {
       if (payloadJson && payloadJson.length > 65536) return
       var payload = JSON.parse(payloadJson || "{}")
+      if (payload && payload.pick === true) { root.openPicker(); return }
       if (!payload || !payload.install) return
       var want = payload.install
       if (typeof want === "string") {
@@ -881,12 +899,13 @@ Item {
   // ---- UI ----------------------------------------------------------------
   PanelWindow {
     id: panel
-    visible: root.opened
+    visible: root.opened && !root.picking
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
     WlrLayershell.namespace: "omarchy-omafont"
     WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: root.opened ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+    WlrLayershell.keyboardFocus: (root.opened && !root.picking)
+                                 ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
     exclusionMode: ExclusionMode.Ignore
 
     Rectangle {
@@ -1554,7 +1573,7 @@ Item {
               visible: root.stagedPath === "" && root.hasPicker
               foreground: root.foreground
               fontFamily: root.fontFamily
-              onClicked: picker.running = true
+              onClicked: root.openPicker()
             }
 
             Button {
