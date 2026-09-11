@@ -26,6 +26,7 @@ your file manager brings up the panel:
 | The **Aa** icon in the bar | Toggles the panel |
 | `omarchy-shell shell toggle nosignal.omafont` | Same, from a script or keybinding |
 | Double-click a `.ttf` / `.otf` in your file manager | Opens with that font staged and previewed |
+| `omarchy-shell shell summon nosignal.omafont '{"pick":true}'` | Opens the file picker straight away |
 | Drop a font file on the open panel | Same |
 
 ## Using it
