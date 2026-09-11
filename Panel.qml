@@ -115,6 +115,10 @@ Item {
   property string stagedSource: ""     // what was dropped, for the caption
   property string stagedFormat: "all"  // "all" | "otf" | "ttf"
 
+  // True from the moment something is handed to stage() until fc-scan has
+  // answered. Distinct from stagedPath, which only exists once it resolves.
+  readonly property bool staging: stagePrep.running || stageScan.running
+
   // Desktop font formats only. Web formats (woff/woff2) turn up in downloaded
   // packs constantly and are no use installed -- fontconfig will index them,
   // then most toolkits ignore them, so they only pad the family list.
@@ -468,7 +472,11 @@ Item {
     // Land on a real font rather than an empty pane. A font manager whose
     // first screen is 60% void is showing you nothing you came for, and the
     // specimen is the whole point of the panel.
-    if (!root.pendingSelect && !root.selectedName && !root.stagedPath) {
+    // stagedPath is not set until fc-scan returns, so checking it alone lets
+    // this fire between the payload arriving and the stage resolving -- the
+    // rail then highlights one font while the pane previews another.
+    if (!root.pendingSelect && !root.selectedName && !root.stagedPath
+        && !root.staging) {
       var rows = root.rows
       for (var r = 0; r < rows.length; r++) {
         if (rows[r].header !== true) { root.selectedName = rows[r].fam.name; break }
@@ -759,6 +767,7 @@ Item {
         root.stagedFaces = faces
         root.stagedFormat = "all"
         root.stagedPath = faces[0].file
+        root.selectedName = ""
         root.status = truncated
           ? "Showing the first " + faces.length + " fonts -- that source holds more"
           : ""
@@ -960,7 +969,12 @@ Item {
       component Chip: Rectangle {
         property string label: ""
         property color tint: root.foreground
-        implicitWidth: chipText.implicitWidth + Style.spacing.lg * 2
+        // Chips carry filenames, and a filename is as long as someone's
+        // download decided it would be. Without a ceiling the pill runs past
+        // the card and is hard-clipped mid-word with no ellipsis.
+        property real maxWidth: Style.space(300)
+
+        implicitWidth: Math.min(chipText.implicitWidth, maxWidth) + Style.spacing.lg * 2
         implicitHeight: chipText.implicitHeight + Style.spacing.sm * 2
         radius: height / 2
         color: Qt.rgba(tint.r, tint.g, tint.b, 0.14)
@@ -968,6 +982,10 @@ Item {
         Text {
           id: chipText
           anchors.centerIn: parent
+          width: Math.min(implicitWidth, parent.maxWidth)
+          // Middle rather than right: the tail of a font filename is where the
+          // weight and the extension live, which is the useful half.
+          elide: Text.ElideMiddle
           text: parent.label
           color: parent.tint
           textFormat: Text.PlainText
@@ -1334,6 +1352,11 @@ Item {
                   font.family: (root.stagedPath || root.setsLatin(root.previewFamily))
                                ? root.previewFamily : root.fontFamily
                   font.pixelSize: Style.space(42)
+                  // Shrink to fit rather than truncate. Eliding a heading that
+                  // IS the font's name -- "Noto Sans Devanagari UI ExtraCond..."
+                  // -- hides the part that distinguishes it from its siblings.
+                  fontSizeMode: Text.HorizontalFit
+                  minimumPixelSize: Style.space(18)
                 }
 
                 // Metadata as chips rather than a dot-joined sentence.
