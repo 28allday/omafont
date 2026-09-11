@@ -373,15 +373,39 @@ Item {
 
   readonly property string downloadScript: [
     'set -eu',
-    '# args: destdir id subset  then WEIGHT STYLE pairs',
+    '# args: destdir id subset cacheroot  then WEIGHT STYLE pairs',
     '#',
-    '# URLs are BUILT here from validated components, never taken from the API',
-    '# response. Every id and subset in the catalogue matches [a-z0-9-]+, every',
-    '# weight is numeric and every style is normal|italic -- so the host can never',
-    '# be influenced by what the server returns.',
-    'dest="$1"; id="$2"; subset="$3"; shift 3',
+    '# URLs are BUILT here from validated components, never taken from a response.',
+    '# Every id and subset matches [a-z0-9-]+, every weight is numeric and every',
+    '# style is normal|italic, so the host cannot be influenced by what a server',
+    '# returns. The resolved version is held to [0-9.] for the same reason.',
+    'dest="$1"; id="$2"; subset="$3"; cacheroot="$4"; shift 4',
     'case "$id" in ""|*[!a-z0-9-]*) echo "bad font id" >&2; exit 2 ;; esac',
     'case "$subset" in ""|*[!a-z0-9-]*) echo "bad subset" >&2; exit 2 ;; esac',
+    '',
+    '# Resolve an EXACT version rather than fetching @latest. @latest is mutable:',
+    '# the bytes behind that URL can change under you. A pinned version cannot.',
+    '# Cached for a day so this costs one request per family, not per download.',
+    'ver=""',
+    'vcache="$cacheroot/versions/$id"',
+    'if [ -f "$vcache" ]; then',
+    '  vage=$(( $(date +%s) - $(stat -c %Y "$vcache" 2>/dev/null || echo 0) ))',
+    '  if [ "$vage" -lt 86400 ]; then ver=$(head -c 32 "$vcache" 2>/dev/null || echo ""); fi',
+    'fi',
+    'if [ -z "$ver" ]; then',
+    '  vjson=$(curl -sL --proto \'=https\' --proto-redir \'=https\' --tlsv1.2 \\',
+    '    --max-time 20 --max-filesize 1048576 \\',
+    '    "https://registry.npmjs.org/@fontsource/$id/latest" 2>/dev/null) || vjson=""',
+    '  ver=$(printf %s "$vjson" | jq -r \'.version // empty\' 2>/dev/null || echo "")',
+    '  if [ -n "$ver" ]; then',
+    '    mkdir -p -- "$cacheroot/versions"',
+    '    printf %s "$ver" > "$vcache" 2>/dev/null || true',
+    '  fi',
+    'fi',
+    '# Anything but digits and dots is refused outright rather than sanitised --',
+    '# a version is the one component here that comes from a response body.',
+    'case "$ver" in ""|*[!0-9.]*) ver="latest" ;; esac',
+    '',
     'mkdir -p -- "$dest"',
     'n=0',
     'while [ $# -ge 2 ]; do',
@@ -391,7 +415,7 @@ Item {
     '  out="$dest/$id-$subset-$w-$st.ttf"',
     '  if ! curl -sL --proto \'=https\' --proto-redir \'=https\' --tlsv1.2 \\',
     '       --max-time 45 --max-filesize 10485760 -o "$out" \\',
-    '       "https://cdn.jsdelivr.net/fontsource/fonts/$id@latest/$subset-$w-$st.ttf"; then',
+    '       "https://cdn.jsdelivr.net/fontsource/fonts/$id@$ver/$subset-$w-$st.ttf"; then',
     '    rm -f -- "$out"',
     '    continue',
     '  fi',
@@ -742,7 +766,8 @@ Item {
     root.browsePreviewFor = base.id
     root.pendingPreviewPath = dir + "/" + base.id + "-" + base.subset + "-" + w + "-" + st + ".ttf"
     previewDownload.command = ["sh", "-c", root.downloadScript, "omafont-preview",
-                               dir, base.id, base.subset, String(w), String(st)]
+                               dir, base.id, base.subset, root.cacheRoot,
+                               String(w), String(st)]
     previewDownload.running = true
   }
 
@@ -786,7 +811,7 @@ Item {
     root.status = "Downloading " + fam.family + "..."
     root.browseTemp = root.cacheRoot + "/dl/" + fam.id
     var args = ["sh", "-c", root.downloadScript, "omafont-download",
-                root.browseTemp, fam.id, fam.subset]
+                root.browseTemp, fam.id, fam.subset, root.cacheRoot]
     for (var i = 0; i < faces.length; i++) {
       args.push(String(faces[i][0]))
       args.push(String(faces[i][1]))
