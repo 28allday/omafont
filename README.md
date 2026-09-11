@@ -43,9 +43,16 @@ are just folded out of the way. A line under the filter tells you how many are
 hidden and unfolds them with a click, and typing a filter searches all of them
 regardless — so `tamil` still finds the Tamil fonts.
 
-The right pane shows a specimen at four sizes plus the full alphabet and
-figures, rendered from the font file itself. That matters for a font you have
-just dropped in: it has not been installed yet, and it still previews.
+Each family is set **in its own face**, so the list shows you fonts rather than
+a list of names. Families that cannot set Latin — icon fonts, emoji, and the
+Noto script faces — fall back to the interface font instead of rendering their
+own name as unrelated symbols.
+
+The right pane is a type specimen: the name at display size, provenance and
+style count as chips, an **editable sample line**, then five size-labelled
+lines, the glyph block, and every style in the family. Everything is rendered
+from the font file itself, which is what lets a font you just dropped in —
+not yet installed — preview exactly like one already on disk.
 
 Buttons along the bottom, shown when they apply:
 
