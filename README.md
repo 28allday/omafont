@@ -1,4 +1,4 @@
-# Fonts
+# omafont
 
 A font manager for the Omarchy shell. See what is installed, preview anything
 in its own typeface, install a whole family in one go, and remove the ones you
