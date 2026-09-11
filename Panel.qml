@@ -63,6 +63,33 @@ Item {
   // Built from one fc-list pass, deduped by family, sorted case-insensitively.
   property var families: []
   property string filter: ""
+
+  // Language-coverage fonts are hidden by default. On a stock Arch/Omarchy box
+  // the Noto packages contribute ~300 of ~346 families -- every writing system
+  // on earth, each in several widths -- which buries the couple of dozen fonts
+  // anyone actually picks. They are infrastructure, like a codec: the browser
+  // and terminal need them to render Arabic, CJK, Hebrew and emoji, so they
+  // must stay installed; they just should not dominate a chooser.
+  //
+  // The base Noto faces are ordinary, choosable text fonts, so they stay
+  // visible -- it is the per-script variants that get folded away.
+  property bool hideCoverage: true
+  readonly property var coverageKeep: [
+    "Noto Sans", "Noto Serif", "Noto Sans Mono", "Noto Sans Display",
+    "Noto Serif Display", "Noto Color Emoji", "Noto Emoji"
+  ]
+
+  function isCoverage(name) {
+    if (name.indexOf("Noto ") !== 0) return false
+    return root.coverageKeep.indexOf(name) < 0
+  }
+
+  readonly property int coverageCount: {
+    var n = 0
+    for (var i = 0; i < root.families.length; i++)
+      if (root.isCoverage(root.families[i].name)) n++
+    return n
+  }
   property string selectedName: ""
   property bool scanning: false
   property string status: ""
@@ -102,6 +129,9 @@ Item {
     for (var i = 0; i < root.families.length; i++) {
       var fam = root.families[i]
       if (f && fam.name.toLowerCase().indexOf(f) < 0) continue
+      // Typing a filter searches everything. Someone who types "tamil" wants
+      // the Tamil fonts, and silently withholding them would read as a bug.
+      if (!f && root.hideCoverage && root.isCoverage(fam.name)) continue
       if (fam.user) mine.push(fam); else sys.push(fam)
     }
     var out = []
@@ -386,6 +416,11 @@ Item {
     root.filter = ""
     pickerProbe.running = true
     root.refresh()
+    // Focus the filter immediately: in a chooser this long, typing is the
+    // primary way in, and making people click the box first is friction for
+    // no gain. The shortcuts that would otherwise be swallowed (Esc, Enter)
+    // are handled on the field itself.
+    filterField.forceActiveFocus()
     try {
       var payload = JSON.parse(payloadJson || "{}")
       if (payload && payload.install) root.stage(payload.install)
@@ -546,8 +581,14 @@ Item {
             horizontalAlignment: Text.AlignRight
             elide: Text.ElideMiddle
             textFormat: Text.PlainText
-            text: root.status !== "" ? root.status
-                  : (root.scanning ? "Scanning..." : root.families.length + " families")
+            text: {
+              if (root.status !== "") return root.status
+              if (root.scanning) return "Scanning..."
+              if (root.hideCoverage && root.filter === "" && root.coverageCount > 0)
+                return (root.families.length - root.coverageCount) + " of "
+                       + root.families.length + " families"
+              return root.families.length + " families"
+            }
             color: root.status !== "" ? root.accent : root.foreground
             opacity: root.status !== "" ? 1.0 : 0.5
             font.family: root.fontFamily
@@ -576,12 +617,55 @@ Item {
               Keys.onEscapePressed: {
                 if (text.length) { text = "" } else { root.close() }
               }
+              // The field has focus from the moment the panel opens, so it
+              // owns Enter too -- otherwise Enter-to-install would only work
+              // after clicking away from the filter.
+              Keys.onReturnPressed: function(event) {
+                if (root.stagedPath) {
+                  root.installStaged()
+                  event.accepted = true
+                }
+              }
+            }
+
+            // Coverage toggle. Doubles as the explanation for why the list is
+            // short -- a silently filtered chooser is worse than a long one.
+            Item {
+              id: coverageBar
+              width: parent.width
+              height: root.coverageCount > 0 ? coverageLabel.implicitHeight : 0
+              visible: root.coverageCount > 0
+
+              Text {
+                id: coverageLabel
+                anchors.left: parent.left
+                anchors.right: parent.right
+                elide: Text.ElideRight
+                textFormat: Text.PlainText
+                text: root.filter !== ""
+                      ? "searching all fonts"
+                      : (root.hideCoverage
+                         ? root.coverageCount + " language fonts hidden · show"
+                         : "showing all · hide language fonts")
+                color: root.filter !== "" ? root.foreground : root.accent
+                opacity: root.filter !== "" ? 0.4 : 0.75
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                enabled: root.filter === ""
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.hideCoverage = !root.hideCoverage
+              }
             }
 
             ListView {
               id: list
               width: parent.width
-              height: parent.height - filterField.height - Style.spacing.sm
+              height: parent.height - filterField.height - coverageBar.height
+                      - Style.spacing.sm * (coverageBar.visible ? 2 : 1)
               clip: true
               model: root.rows
               spacing: 0
