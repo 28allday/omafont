@@ -102,10 +102,81 @@ Item {
   property string status: ""
   property bool hasPicker: false
 
-  // A font file that is NOT installed yet: staged from a drop or from the
-  // mime-handler payload. Previewed through stagedLoader, which reads the file
-  // directly, so it renders without touching the font directories.
+  // Fonts that are NOT installed yet: staged from a drop, the file picker, or
+  // the mime-handler payload. A stage can be a single file, a folder, or a zip
+  // -- a downloaded family is almost never one file, so installing one face at
+  // a time would be the wrong unit of work.
+  //
+  // stagedFaces is what fc-scan found: [{ family, style, file, ext }].
+  // stagedPath is the representative face the specimen renders.
   property string stagedPath: ""
+  property var stagedFaces: []
+  property string stagedTemp: ""       // extracted zip, ours to delete
+  property string stagedSource: ""     // what was dropped, for the caption
+  property string stagedFormat: "all"  // "all" | "otf" | "ttf"
+
+  // Desktop font formats only. Web formats (woff/woff2) turn up in downloaded
+  // packs constantly and are no use installed -- fontconfig will index them,
+  // then most toolkits ignore them, so they only pad the family list.
+  function isDesktopFont(path) {
+    return /\.(ttf|otf|ttc)$/i.test(path)
+  }
+
+  readonly property var stagedSelected: {
+    var out = []
+    for (var i = 0; i < root.stagedFaces.length; i++) {
+      var f = root.stagedFaces[i]
+      if (root.stagedFormat === "otf" && f.ext !== "otf") continue
+      if (root.stagedFormat === "ttf" && f.ext !== "ttf") continue
+      out.push(f)
+    }
+    return out
+  }
+
+  readonly property var stagedFamilies: {
+    var seen = ({}), out = []
+    for (var i = 0; i < root.stagedSelected.length; i++) {
+      var n = root.stagedSelected[i].family
+      if (!seen[n]) { seen[n] = true; out.push(n) }
+    }
+    out.sort()
+    return out
+  }
+
+  readonly property int stagedOtfCount: {
+    var n = 0
+    for (var i = 0; i < root.stagedFaces.length; i++)
+      if (root.stagedFaces[i].ext === "otf") n++
+    return n
+  }
+  readonly property int stagedTtfCount: {
+    var n = 0
+    for (var i = 0; i < root.stagedFaces.length; i++)
+      if (root.stagedFaces[i].ext !== "otf") n++
+    return n
+  }
+
+  // One directory per stage, named for what the families have in common --
+  // "Gotham" for a pack that declares Gotham, Gotham Black, Gotham Light and
+  // so on. That is the unit a person means by "the family", and it keeps a
+  // 25-file download from strewing ten folders through the font directory.
+  readonly property string stagedGroup: {
+    var fams = root.stagedFamilies
+    if (!fams.length) return ""
+    if (fams.length === 1) return fams[0]
+    var words = fams[0].split(" ")
+    var common = []
+    for (var w = 0; w < words.length; w++) {
+      var ok = true
+      for (var i = 1; i < fams.length; i++) {
+        var other = fams[i].split(" ")
+        if (other.length <= w || other[w] !== words[w]) { ok = false; break }
+      }
+      if (!ok) break
+      common.push(words[w])
+    }
+    return common.length ? common.join(" ") : fams[0]
+  }
 
   readonly property string stagedName: {
     if (!root.stagedPath) return ""
@@ -115,11 +186,18 @@ Item {
 
   // True once the staged file's family is already present on disk. Turns the
   // Install button into a labelled no-op rather than silently overwriting.
+  // True when every family in the stage is already on disk -- so a re-drop of
+  // something you already have says so instead of looking like a fresh find.
   readonly property bool stagedInstalled: {
-    if (!stagedLoader.name) return false
-    for (var i = 0; i < root.families.length; i++)
-      if (root.families[i].name === stagedLoader.name) return true
-    return false
+    var fams = root.stagedFamilies
+    if (!fams.length) return false
+    for (var i = 0; i < fams.length; i++) {
+      var found = false
+      for (var j = 0; j < root.families.length; j++)
+        if (root.families[j].name === fams[i]) { found = true; break }
+      if (!found) return false
+    }
+    return true
   }
 
   readonly property var selected: {
@@ -171,6 +249,13 @@ Item {
   readonly property string previewFamily: {
     if (stagedLoader.name) return stagedLoader.name
     return root.selected ? root.selected.name : ""
+  }
+
+  // What the heading says. For a staged pack that is the group name ("Gotham"),
+  // not whichever single face happens to render the specimen.
+  readonly property string previewTitle: {
+    if (root.stagedFaces.length) return root.stagedGroup || root.previewFamily
+    return root.previewFamily
   }
 
   FontLoader {
@@ -282,18 +367,27 @@ Item {
   // $1 source file, $2 destination subdirectory (already sanitised in QML).
   // cp -f rather than -n: re-installing a font you already have should replace
   // it, which is what every "install" button anywhere does.
+  // $1 destination subdirectory (already slugged in QML), then every file to
+  // install. The extension check is repeated here rather than trusted from
+  // QML, so nothing but a font can be copied in whatever the caller believes.
   readonly property string installScript: [
     'set -eu',
-    'src="$1"; sub="$2"',
-    'case "$src" in',
-    '  *.ttf|*.TTF|*.otf|*.OTF|*.ttc|*.TTC|*.pfb|*.PFB) ;;',
-    '  *) echo "unsupported file type" >&2; exit 2 ;;',
-    'esac',
-    '[ -f "$src" ] || { echo "no such file" >&2; exit 2; }',
+    'sub="$1"; shift',
     'dest="$HOME/.local/share/fonts/$sub"',
     'mkdir -p -- "$dest"',
-    'cp -f -- "$src" "$dest/"',
-    'fc-cache -f -- "$dest" >/dev/null 2>&1 || fc-cache -f >/dev/null 2>&1 || true'
+    'n=0',
+    'for f in "$@"; do',
+    '  case "$f" in',
+    '    *.ttf|*.TTF|*.otf|*.OTF|*.ttc|*.TTC) ;;',
+    '    *) continue ;;',
+    '  esac',
+    '  [ -f "$f" ] || continue',
+    '  cp -f -- "$f" "$dest/"',
+    '  n=$((n+1))',
+    'done',
+    '[ "$n" -gt 0 ] || { echo "no installable font files" >&2; exit 2; }',
+    'fc-cache -f -- "$dest" >/dev/null 2>&1 || fc-cache -f >/dev/null 2>&1 || true',
+    'printf "%s\n" "$n"'
   ].join("\n")
 
   Process {
@@ -302,7 +396,7 @@ Item {
     onExited: function(code) {
       if (code === 0) {
         root.status = "Installed " + root.pendingLabel + " -- restart an app to use it"
-        root.stagedPath = ""
+        root.clearStage()
         root.pendingSelect = root.pendingFamily
         root.refresh()
       } else {
@@ -336,13 +430,19 @@ Item {
   }
 
   function installStaged() {
-    if (!root.stagedPath) return
-    var fam = stagedLoader.name || root.stagedName.replace(/\.[^.]+$/, "")
-    root.pendingLabel = fam
-    root.pendingFamily = fam
-    root.status = "Installing " + fam + "..."
-    installer.command = ["sh", "-c", root.installScript, "omafont-install",
-                         root.stagedPath, root.slug(fam)]
+    var faces = root.stagedSelected
+    if (!faces.length) return
+    var group = root.stagedGroup || stagedLoader.name || "Custom"
+    root.pendingLabel = faces.length === 1
+      ? group
+      : group + " (" + faces.length + " fonts)"
+    // Select the family the specimen was showing, so the list lands where the
+    // eye already is rather than on whatever sorts first.
+    root.pendingFamily = faces[0].family
+    root.status = "Installing " + group + "..."
+    var args = ["sh", "-c", root.installScript, "omafont-install", root.slug(group)]
+    for (var i = 0; i < faces.length; i++) args.push(faces[i].file)
+    installer.command = args
     installer.running = true
   }
 
@@ -426,28 +526,172 @@ Item {
 
   Process {
     id: picker
-    command: ["zenity", "--file-selection", "--title=Choose a font file",
-              "--file-filter=Fonts | *.ttf *.otf *.ttc *.TTF *.OTF *.TTC"]
+    command: ["zenity", "--file-selection", "--multiple", "--separator=\n",
+              "--title=Choose fonts, a folder, or a zip",
+              "--file-filter=Fonts and archives | *.ttf *.otf *.ttc *.zip *.TTF *.OTF *.TTC *.ZIP",
+              "--file-filter=All files | *"]
     stdout: StdioCollector {
       onStreamFinished: {
-        var p = this.text.trim()
-        if (p) root.stage(p)
+        var picked = []
+        var lines = this.text.split("\n")
+        for (var i = 0; i < lines.length; i++)
+          if (lines[i].trim()) picked.push(lines[i].trim())
+        if (picked.length) root.stage(picked)
       }
     }
   }
 
   // ---- Staging -----------------------------------------------------------
-  function stage(path) {
-    if (!path) return
-    var p = String(path)
-    if (p.indexOf("file://") === 0) p = decodeURIComponent(p.substring(7))
-    if (!/\.(ttf|otf|ttc|pfb)$/i.test(p)) {
-      root.status = "Not a font file: " + p.split("/").pop()
-      return
+  // Two steps, so nothing has to be quoted into a shell string: stagePrep
+  // resolves whatever was handed over into a path fc-scan can walk (extracting
+  // a zip if need be), and stageScan enumerates the faces under it.
+  //
+  // Zips are extracted with -j, which flattens the archive. That is not just
+  // tidiness: a flattened extract cannot write outside the target directory,
+  // so a hostile archive's ../.. entries are inert.
+  readonly property string stagePrepScript: [
+    'set -eu',
+    'work=""',
+    'found=0',
+    'for src in "$@"; do',
+    '  case "$src" in',
+    '    *.zip|*.ZIP)',
+    '      if [ -z "$work" ]; then',
+    '        work="${XDG_RUNTIME_DIR:-/tmp}/omafont-stage-$$"',
+    '        rm -rf -- "$work"',
+    '        mkdir -p -- "$work"',
+    '        printf "TEMP %s\\n" "$work"',
+    '      fi',
+    '      unzip -j -qq -o "$src" \'*.ttf\' \'*.otf\' \'*.ttc\' \'*.TTF\' \'*.OTF\' \'*.TTC\' -d "$work" >/dev/null 2>&1 || true',
+    '      ;;',
+    '    *)',
+    '      [ -e "$src" ] || continue',
+    '      printf "PATH %s\\n" "$src"',
+    '      found=$((found+1))',
+    '      ;;',
+    '  esac',
+    'done',
+    'if [ -n "$work" ]; then',
+    '  if [ -z "$(ls -A "$work" 2>/dev/null)" ]; then',
+    '    rm -rf -- "$work"',
+    '  else',
+    '    printf "PATH %s\\n" "$work"',
+    '    found=$((found+1))',
+    '  fi',
+    'fi',
+    '[ "$found" -gt 0 ] || { echo "nothing there to install" >&2; exit 2; }'
+  ].join("\n")
+
+  Process {
+    id: stagePrep
+    stderr: StdioCollector {}
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var targets = []
+        var lines = this.text.split("\n")
+        for (var i = 0; i < lines.length; i++) {
+          if (lines[i].indexOf("TEMP ") === 0) root.stagedTemp = lines[i].substring(5)
+          else if (lines[i].indexOf("PATH ") === 0) targets.push(lines[i].substring(5))
+        }
+        if (!targets.length) return
+        // fc-scan walks several paths in one pass, so a multi-file drop costs
+        // the same as a single one.
+        var cmd = ["fc-scan", "--format", "%{family[0]}\t%{style[0]}\t%{file}\n"]
+        stageScan.command = cmd.concat(targets)
+        stageScan.running = true
+      }
     }
+    onExited: function(code) {
+      if (code !== 0) {
+        var msg = stagePrep.stderr && stagePrep.stderr.text ? stagePrep.stderr.text.trim() : ""
+        root.status = msg ? msg : "Could not read that"
+      }
+    }
+  }
+
+  Process {
+    id: stageScan
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var faces = []
+        var lines = this.text.split("\n")
+        var cap = Math.min(lines.length, 20000)
+        for (var i = 0; i < cap; i++) {
+          var parts = lines[i].split("\t")
+          if (parts.length < 3) continue
+          var file = parts[2].trim()
+          if (!root.isDesktopFont(file)) continue
+          var m = file.match(/\.([A-Za-z0-9]+)$/)
+          faces.push({
+            family: parts[0].trim(),
+            style: parts[1].trim(),
+            file: file,
+            ext: m ? m[1].toLowerCase() : ""
+          })
+        }
+        if (!faces.length) {
+          root.clearStage()
+          root.status = "No installable fonts found in that"
+          return
+        }
+        faces.sort(function(a, b) {
+          var an = (a.family + " " + a.style).toLowerCase()
+          var bn = (b.family + " " + b.style).toLowerCase()
+          return an < bn ? -1 : (an > bn ? 1 : 0)
+        })
+        root.stagedFaces = faces
+        root.stagedFormat = "all"
+        root.stagedPath = faces[0].file
+        root.status = ""
+      }
+    }
+  }
+
+  // Deleting a zip we extracted. Confined to our own temp prefix, and the
+  // script re-checks that rather than trusting the caller.
+  readonly property string cleanTempScript: [
+    'set -eu',
+    'd="$1"',
+    '[ -n "$d" ] || exit 0',
+    'case "$d" in */omafont-stage-*) ;; *) exit 0 ;; esac',
+    'case "$d" in *..*) exit 0 ;; esac',
+    '[ -d "$d" ] || exit 0',
+    'rm -rf -- "$d"'
+  ].join("\n")
+
+  function clearStage() {
+    if (root.stagedTemp) {
+      Quickshell.execDetached(["sh", "-c", root.cleanTempScript,
+                               "omafont-cleanup", root.stagedTemp])
+      root.stagedTemp = ""
+    }
+    root.stagedPath = ""
+    root.stagedFaces = []
+    root.stagedSource = ""
+    root.stagedFormat = "all"
+  }
+
+  // Accepts a single path or a list of them -- a dropped selection, a folder,
+  // a zip, or any mix of those.
+  function stage(paths) {
+    if (!paths) return
+    var list = (typeof paths === "string") ? [paths] : paths
+    var clean = []
+    for (var i = 0; i < list.length; i++) {
+      var p = String(list[i])
+      if (p.indexOf("file://") === 0) p = decodeURIComponent(p.substring(7))
+      if (p) clean.push(p)
+    }
+    if (!clean.length) return
+    root.clearStage()
     root.selectedName = ""
-    root.stagedPath = p
-    root.status = ""
+    root.stagedSource = clean.length === 1
+      ? clean[0].split("/").pop()
+      : clean.length + " items"
+    root.status = "Reading " + root.stagedSource + "..."
+    var cmd = ["sh", "-c", root.stagePrepScript, "omafont-stage"]
+    stagePrep.command = cmd.concat(clean)
+    stagePrep.running = true
   }
 
   function open(payloadJson) {
@@ -477,7 +721,7 @@ Item {
   function close() {
     if (!root.opened) return
     root.opened = false
-    root.stagedPath = ""
+    root.clearStage()
     if (root.shell && typeof root.shell.hide === "function")
       root.shell.hide(root.selfId)
   }
@@ -553,7 +797,7 @@ Item {
         keys: ["text/uri-list"]
         onDropped: function(drop) {
           if (drop.hasUrls && drop.urls.length) {
-            root.stage(drop.urls[0])
+            root.stage(drop.urls)
             drop.accept()
           }
         }
@@ -918,7 +1162,7 @@ Item {
                   width: parent.width
                   elide: Text.ElideRight
                   textFormat: Text.PlainText
-                  text: root.previewFamily
+                  text: root.previewTitle
                   color: root.foreground
                   // Staged fonts are not in fontconfig's index yet, so they are
                   // always drawn in their own face -- seeing the thing you are
@@ -935,8 +1179,19 @@ Item {
 
                   Chip {
                     visible: root.stagedPath !== ""
-                    label: root.stagedInstalled ? "family already installed" : "not installed"
+                    label: root.stagedInstalled ? "already installed" : "not installed"
                     tint: root.accent
+                  }
+                  Chip {
+                    visible: root.stagedPath !== ""
+                    label: root.stagedSelected.length
+                           + (root.stagedSelected.length === 1 ? " font" : " fonts")
+                    tint: root.foreground
+                  }
+                  Chip {
+                    visible: root.stagedPath !== "" && root.stagedFamilies.length > 1
+                    label: root.stagedFamilies.length + " families"
+                    tint: root.foreground
                   }
                   Chip {
                     visible: root.stagedPath === "" && root.selected !== null
@@ -957,8 +1212,41 @@ Item {
                   }
                   Chip {
                     visible: root.stagedPath !== ""
-                    label: root.stagedName
+                    label: root.stagedSource
                     tint: root.foreground
+                  }
+
+                  // Packs routinely ship the same faces as both OTF and TTF.
+                  // Installing both leaves duplicates in every font menu, and
+                  // the two formats often disagree about family names, so they
+                  // cannot be deduped reliably -- let the choice be explicit.
+                  Repeater {
+                    model: (root.stagedPath !== "" && root.stagedOtfCount > 0
+                            && root.stagedTtfCount > 0)
+                           ? [{ key: "all", label: "both" },
+                              { key: "otf", label: root.stagedOtfCount + " OTF" },
+                              { key: "ttf", label: root.stagedTtfCount + " TTF" }]
+                           : []
+
+                    Item {
+                      required property var modelData
+                      implicitWidth: fmtChip.implicitWidth
+                      implicitHeight: fmtChip.implicitHeight
+
+                      Chip {
+                        id: fmtChip
+                        label: parent.modelData.label
+                        tint: root.stagedFormat === parent.modelData.key
+                              ? root.accent : root.foreground
+                        opacity: root.stagedFormat === parent.modelData.key ? 1.0 : 0.55
+                      }
+
+                      MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.stagedFormat = parent.modelData.key
+                      }
+                    }
                   }
                 }
 
@@ -1026,6 +1314,56 @@ Item {
                   lineHeight: 1.4
                 }
 
+                // What a staged pack will actually install, spelled out. A
+                // batch install is worth showing in full before it happens.
+                Column {
+                  width: parent.width
+                  spacing: Style.spacing.xxs
+                  visible: root.stagedPath !== "" && root.stagedFamilies.length > 0
+
+                  Text {
+                    width: parent.width
+                    text: "Will install"
+                    color: root.foreground
+                    opacity: 0.35
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    font.letterSpacing: 1
+                  }
+
+                  Repeater {
+                    model: root.stagedFamilies
+
+                    Text {
+                      required property string modelData
+                      width: preview.width
+                      elide: Text.ElideRight
+                      textFormat: Text.PlainText
+                      text: {
+                        var n = 0
+                        for (var i = 0; i < root.stagedSelected.length; i++)
+                          if (root.stagedSelected[i].family === modelData) n++
+                        return modelData + "  " + n
+                      }
+                      color: root.foreground
+                      opacity: 0.6
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+
+                  Text {
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    text: "into ~/.local/share/fonts/" + root.slug(root.stagedGroup) + "/"
+                    color: root.foreground
+                    opacity: 0.3
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+
                 // Styles in the family, as chips.
                 Flow {
                   width: parent.width
@@ -1066,7 +1404,9 @@ Item {
             spacing: Style.spacing.sm
 
             Button {
-              text: "Install"
+              text: root.stagedSelected.length > 1
+                    ? "Install " + root.stagedSelected.length + " fonts"
+                    : "Install"
               bordered: true
               visible: root.stagedPath !== ""
               foreground: root.accent
