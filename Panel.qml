@@ -53,14 +53,14 @@ Item {
   readonly property int cornerRadius: Style.cornerRadius
   property string fontFamily: Style.font.menuFamily
   property int contentMargin: Style.spacing.panelPadding
-  property int contentSpacing: Style.spacing.lg
-  readonly property int railWidth: Style.space(250)
-  readonly property int rowH: Style.space(26)
+  property int contentSpacing: Style.spacing.xl
+  readonly property int railWidth: Style.space(262)
+  readonly property int rowH: Style.space(30)
   readonly property int headerH: Style.font.heading + Style.spacing.lg
 
   // Specimen sizes, largest first. Labelled in a left gutter so the pane reads
   // as a type specimen rather than four unexplained repetitions of a sentence.
-  readonly property var specimenSizes: [48, 32, 22, 16, 12]
+  readonly property var specimenSizes: [56, 34, 24, 17, 12]
 
   readonly property string defaultSample: "The quick brown fox jumps over the lazy dog"
   property string sample: root.defaultSample
@@ -920,8 +920,8 @@ Item {
 
     BorderSurface {
       id: card
-      width: Math.min(Style.space(940), panel.width - Style.gapsOut * 2)
-      height: Math.max(0, Math.min(panel.height * 0.8, panel.height - Style.gapsOut * 2))
+      width: Math.min(Style.space(980), panel.width - Style.gapsOut * 2)
+      height: Math.max(0, Math.min(panel.height * 0.82, panel.height - Style.gapsOut * 2))
       radius: root.cornerRadius
       anchors.centerIn: parent
       color: root.background
@@ -951,8 +951,8 @@ Item {
       component Chip: Rectangle {
         property string label: ""
         property color tint: root.foreground
-        implicitWidth: chipText.implicitWidth + Style.spacing.md * 2
-        implicitHeight: chipText.implicitHeight + Style.spacing.xs * 2
+        implicitWidth: chipText.implicitWidth + Style.spacing.lg * 2
+        implicitHeight: chipText.implicitHeight + Style.spacing.sm * 2
         radius: height / 2
         color: Qt.rgba(tint.r, tint.g, tint.b, 0.14)
 
@@ -1053,9 +1053,18 @@ Item {
                   - root.contentSpacing * 3
           spacing: root.contentSpacing
 
-          Column {
+          // The rail sits on its own faintly tinted surface. One flat slab
+          // divided by a rule reads as a spreadsheet; two surfaces read as a
+          // browser with a canvas beside it, which is what this is.
+          Rectangle {
             width: root.railWidth
             height: parent.height
+            radius: Math.max(2, Style.space(6))
+            color: Style.normalFill
+
+            Column {
+            anchors.fill: parent
+            anchors.margins: Style.spacing.md
             spacing: Style.spacing.sm
 
             TextField {
@@ -1239,18 +1248,11 @@ Item {
               }
             }
           }
-
-          // Rail/preview separator.
-          Rectangle {
-            width: Style.spacing.hairline
-            height: parent.height
-            color: root.foreground
-            opacity: 0.12
           }
 
           // ---- Preview ----
           Item {
-            width: parent.width - root.railWidth - root.contentSpacing * 2 - 1
+            width: parent.width - root.railWidth - root.contentSpacing
             height: parent.height
 
             // Empty state
@@ -1302,7 +1304,7 @@ Item {
               Column {
                 id: preview
                 width: parent.width
-                spacing: Style.spacing.lg
+                spacing: Style.spacing.xxl
 
                 // Name, set in its own face at display size.
                 Text {
@@ -1316,7 +1318,7 @@ Item {
                   // about to install is the entire point of the staged state.
                   font.family: (root.stagedPath || root.setsLatin(root.previewFamily))
                                ? root.previewFamily : root.fontFamily
-                  font.pixelSize: Style.space(34)
+                  font.pixelSize: Style.space(42)
                 }
 
                 // Metadata as chips rather than a dot-joined sentence.
@@ -1443,23 +1445,28 @@ Item {
                   }
                 }
 
+                // The character set on its own plate. A tinted block gives the
+                // pane a second surface and stops the glyphs reading as one
+                // more paragraph of sample text.
                 Rectangle {
                   width: parent.width
-                  height: Style.spacing.hairline
-                  color: root.foreground
-                  opacity: 0.12
-                }
+                  height: glyphs.implicitHeight + Style.spacing.lg * 2
+                  radius: Math.max(2, Style.space(6))
+                  color: Style.normalFill
 
-                Text {
-                  width: parent.width
-                  wrapMode: Text.WrapAnywhere
-                  textFormat: Text.PlainText
-                  text: "ABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz\n0123456789  &@#$%*()[]{}/\\ <>?!.,;:'\"-+="
-                  color: root.foreground
-                  opacity: 0.7
-                  font.family: root.previewFamily
-                  font.pixelSize: Style.space(15)
-                  lineHeight: 1.4
+                  Text {
+                    id: glyphs
+                    anchors.fill: parent
+                    anchors.margins: Style.spacing.lg
+                    wrapMode: Text.WrapAnywhere
+                    textFormat: Text.PlainText
+                    text: "ABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz\n0123456789  &@#$%*()[]{}/\\ <>?!.,;:'\"-+="
+                    color: root.foreground
+                    opacity: 0.8
+                    font.family: root.previewFamily
+                    font.pixelSize: Style.space(17)
+                    lineHeight: 1.45
+                  }
                 }
 
                 // What a staged pack will actually install, spelled out. A
@@ -1510,10 +1517,26 @@ Item {
                 }
 
                 // Styles in the family, as chips.
+                Column {
+                  width: parent.width
+                  spacing: Style.spacing.sm
+                  visible: !root.stagedPath && root.selected && root.selected.styles.length > 0
+
+                  Text {
+                    width: parent.width
+                    textFormat: Text.PlainText
+                    text: "STYLES"
+                    color: root.foreground
+                    opacity: 0.3
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    font.letterSpacing: 1
+                  }
+
                 Flow {
                   width: parent.width
                   spacing: Style.spacing.xs
-                  visible: !root.stagedPath && root.selected && root.selected.styles.length > 0
 
                   Repeater {
                     model: root.selected ? root.selected.styles : []
@@ -1523,6 +1546,7 @@ Item {
                       tint: root.foreground
                     }
                   }
+                }
                 }
               }
             }
