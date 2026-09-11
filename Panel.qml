@@ -321,6 +321,402 @@ Item {
     return root.latinFamilies[name] === true
   }
 
+
+  // ---- Browse: free fonts from Fontsource --------------------------------
+  // Fontsource is a packaging of Google Fonts and friends: 2100 families, no
+  // API key, and every one under OFL, Apache, UFL, MIT or Unlicense -- so
+  // redistribution is actually permitted, which is the part that matters when
+  // an app installs them for you.
+  property var catalogue: []
+  property bool catalogueLoading: false
+  property string catalogueError: ""
+  property string browseFilter: ""
+  property string browseSelectedId: ""
+  property string browsePreviewFile: ""
+  property string browseTemp: ""
+  property bool browseBusy: false
+
+  readonly property int catalogueCap: 4194304
+  readonly property int catalogueMaxAge: 86400
+
+  readonly property string catalogueScript: [
+    'set -eu',
+    '# Catalogue fetch, cached on disk. Bounded three ways: a wall-clock timeout,',
+    '# a hard byte ceiling from curl itself, and a read ceiling on the way in.',
+    'cache="$1"; cap="$2"; maxage="$3"',
+    'if [ -f "$cache" ]; then',
+    '  age=$(( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0) ))',
+    '  if [ "$age" -lt "$maxage" ]; then',
+    '    head -c "$cap" "$cache"',
+    '    exit 0',
+    '  fi',
+    'fi',
+    'mkdir -p -- "$(dirname -- "$cache")"',
+    'tmp="$cache.$$"',
+    '# --proto and --proto-redir pin https across redirects too, so a redirect',
+    '# cannot downgrade the transport.',
+    'if curl -sL --proto \'=https\' --proto-redir \'=https\' --tlsv1.2 \\',
+    '     --max-time 30 --max-filesize 8388608 \\',
+    '     -o "$tmp" "https://api.fontsource.org/v1/fonts"; then',
+    '  if head -c 1 "$tmp" | grep -q "\\["; then',
+    '    mv -- "$tmp" "$cache"',
+    '    head -c "$cap" "$cache"',
+    '    exit 0',
+    '  fi',
+    'fi',
+    'rm -f -- "$tmp"',
+    '# A stale cache beats no list at all when the network is down.',
+    'if [ -f "$cache" ]; then head -c "$cap" "$cache"; exit 0; fi',
+    'echo "could not reach the font catalogue" >&2',
+    'exit 2'
+  ].join("\n")
+
+  readonly property string downloadScript: [
+    'set -eu',
+    '# args: destdir id subset  then WEIGHT STYLE pairs',
+    '#',
+    '# URLs are BUILT here from validated components, never taken from the API',
+    '# response. Every id and subset in the catalogue matches [a-z0-9-]+, every',
+    '# weight is numeric and every style is normal|italic -- so the host can never',
+    '# be influenced by what the server returns.',
+    'dest="$1"; id="$2"; subset="$3"; shift 3',
+    'case "$id" in ""|*[!a-z0-9-]*) echo "bad font id" >&2; exit 2 ;; esac',
+    'case "$subset" in ""|*[!a-z0-9-]*) echo "bad subset" >&2; exit 2 ;; esac',
+    'mkdir -p -- "$dest"',
+    'n=0',
+    'while [ $# -ge 2 ]; do',
+    '  w="$1"; st="$2"; shift 2',
+    '  case "$w" in ""|*[!0-9]*) continue ;; esac',
+    '  case "$st" in normal|italic) ;; *) continue ;; esac',
+    '  out="$dest/$id-$subset-$w-$st.ttf"',
+    '  if ! curl -sL --proto \'=https\' --proto-redir \'=https\' --tlsv1.2 \\',
+    '       --max-time 45 --max-filesize 10485760 -o "$out" \\',
+    '       "https://cdn.jsdelivr.net/fontsource/fonts/$id@latest/$subset-$w-$st.ttf"; then',
+    '    rm -f -- "$out"',
+    '    continue',
+    '  fi',
+    '  # Whatever arrived must actually parse as a font before it is allowed near',
+    '  # the font directory. A 200 response is not evidence of anything.',
+    '  if ! fc-scan --format="%{family[0]}" "$out" 2>/dev/null | grep -q .; then',
+    '    rm -f -- "$out"',
+    '    continue',
+    '  fi',
+    '  n=$((n+1))',
+    'done',
+    '[ "$n" -gt 0 ] || { echo "nothing downloaded" >&2; exit 2; }',
+    'printf "%s\\n" "$n"'
+  ].join("\n")
+
+  readonly property var browseSelected: {
+    var src = root.browseSource === "nerd" ? root.nerdFonts : root.catalogue
+    for (var i = 0; i < src.length; i++)
+      if (src[i].id === root.browseSelectedId) return src[i]
+    return null
+  }
+
+  readonly property var browseRows: {
+    var f = root.browseFilter.toLowerCase()
+    var out = []
+    for (var i = 0; i < root.catalogue.length && out.length < 600; i++) {
+      var c = root.catalogue[i]
+      if (f && c.family.toLowerCase().indexOf(f) < 0) continue
+      out.push(c)
+    }
+    return out
+  }
+
+  // The four faces almost anyone actually wants, filtered to what the family
+  // really ships. "Every weight" is a separate, explicit action.
+  function browseCoreFaces(fam) {
+    if (!fam) return []
+    var want = [[400, "normal"], [700, "normal"], [400, "italic"], [700, "italic"]]
+    var out = []
+    for (var i = 0; i < want.length; i++) {
+      var w = want[i][0], st = want[i][1]
+      if (fam.weights.indexOf(w) < 0) continue
+      if (fam.styles.indexOf(st) < 0) continue
+      out.push([w, st])
+    }
+    // A family with no 400 (some display faces start at 700) still needs a face.
+    if (!out.length && fam.weights.length)
+      out.push([fam.weights[0], fam.styles.indexOf("normal") >= 0 ? "normal" : fam.styles[0]])
+    return out
+  }
+
+  function browseAllFaces(fam) {
+    if (!fam) return []
+    var out = []
+    for (var i = 0; i < fam.weights.length; i++)
+      for (var j = 0; j < fam.styles.length; j++) {
+        if (out.length >= root.maxFaces) return out
+        out.push([fam.weights[i], fam.styles[j]])
+      }
+    return out
+  }
+
+
+  // ---- Browse: Nerd Fonts ------------------------------------------------
+  // The patched terminal fonts, one zip per family off the GitHub release.
+  // Worth a source of its own here: on this desktop they are the fonts people
+  // actually go looking for, and installing them by hand means finding the
+  // release page, picking among 73 archives and unpacking it yourself.
+  property var nerdFonts: []
+  property string nerdTag: ""
+
+  readonly property string nerdScript: [
+    'set -eu',
+    '# Nerd Fonts ship as one zip per family on a GitHub release. Cached, because',
+    '# unauthenticated GitHub API calls are rate limited to 60/hour per address.',
+    'cache="$1"; cap="$2"; maxage="$3"',
+    'if [ -f "$cache" ]; then',
+    '  age=$(( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0) ))',
+    '  if [ "$age" -lt "$maxage" ]; then head -c "$cap" "$cache"; exit 0; fi',
+    'fi',
+    'mkdir -p -- "$(dirname -- "$cache")"',
+    'tmp="$cache.$$"',
+    'if curl -sL --proto \'=https\' --proto-redir \'=https\' --tlsv1.2 \\',
+    '     --max-time 30 --max-filesize 8388608 \\',
+    '     -H "Accept: application/vnd.github+json" \\',
+    '     -o "$tmp" "https://api.github.com/repos/ryanoasis/nerd-fonts/releases/latest"; then',
+    '  if head -c 1 "$tmp" | grep -q "{"; then',
+    '    mv -- "$tmp" "$cache"; head -c "$cap" "$cache"; exit 0',
+    '  fi',
+    'fi',
+    'rm -f -- "$tmp"',
+    'if [ -f "$cache" ]; then head -c "$cap" "$cache"; exit 0; fi',
+    'echo "could not reach the Nerd Fonts release list" >&2',
+    'exit 2'
+  ].join("\n")
+
+  readonly property string zipDownloadScript: [
+    'set -eu',
+    '# args: destdir tag asset maxbytes',
+    '#',
+    '# Downloads to the DISK cache, never $XDG_RUNTIME_DIR: these archives run to',
+    '# hundreds of megabytes and the runtime dir is tmpfs, so a large one there',
+    '# would be paid for in RAM.',
+    '#',
+    '# The URL is built from a tag matching ^v[0-9.]+$ and an asset name matching',
+    '# [A-Za-z0-9._-]+, both checked here -- nothing the API returns reaches curl',
+    '# unvalidated.',
+    'dest="$1"; tag="$2"; asset="$3"; maxbytes="$4"',
+    'case "$tag" in ""|*[!v0-9.]*) echo "bad release tag" >&2; exit 2 ;; esac',
+    'case "$asset" in ""|*[!A-Za-z0-9._-]*) echo "bad asset name" >&2; exit 2 ;; esac',
+    'case "$asset" in *..*) echo "bad asset name" >&2; exit 2 ;; esac',
+    'case "$maxbytes" in ""|*[!0-9]*) maxbytes=134217728 ;; esac',
+    'mkdir -p -- "$dest"',
+    'out="$dest/$asset"',
+    'rm -f -- "$out"',
+    'if ! curl -sL --proto \'=https\' --proto-redir \'=https\' --tlsv1.2 \\',
+    '     --max-time 900 --max-filesize "$maxbytes" -o "$out" \\',
+    '     "https://github.com/ryanoasis/nerd-fonts/releases/download/$tag/$asset"; then',
+    '  rm -f -- "$out"',
+    '  echo "download failed or exceeded the size limit" >&2',
+    '  exit 2',
+    'fi',
+    '# Must be a zip before anything else touches it.',
+    'if ! head -c 2 "$out" | grep -q "PK"; then',
+    '  rm -f -- "$out"',
+    '  echo "that download was not an archive" >&2',
+    '  exit 2',
+    'fi',
+    'printf "%s\\n" "$out"'
+  ].join("\n")
+
+
+  // Nothing here runs on open. Every network call below is started by an
+  // explicit click -- loading the list, previewing a face, installing a family.
+  // A font panel that quietly fetches megabytes because you opened it is doing
+  // something you did not ask for.
+  property bool browseLoaded: false
+  property string tab: "installed"           // "installed" | "browse"
+  property string browseSource: "fontsource" // "fontsource" | "nerd"
+
+  readonly property var browseList: {
+    var src = root.browseSource === "nerd" ? root.nerdFonts : root.catalogue
+    var f = root.browseFilter.toLowerCase()
+    var out = []
+    for (var i = 0; i < src.length && out.length < 800; i++) {
+      if (f && src[i].family.toLowerCase().indexOf(f) < 0) continue
+      out.push(src[i])
+    }
+    return out
+  }
+
+  Process {
+    id: catalogueFetch
+    stderr: StdioCollector {}
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var arr = JSON.parse(this.text)
+          if (!Array.isArray(arr)) return
+          var out = []
+          for (var i = 0; i < arr.length && out.length < 5000; i++) {
+            var e = arr[i]
+            if (!e || typeof e.id !== "string" || typeof e.family !== "string") continue
+            if (!/^[a-z0-9-]+$/.test(e.id)) continue
+            out.push({
+              id: e.id, family: e.family,
+              category: String(e.category || ""),
+              license: String(e.license || ""),
+              subset: /^[a-z0-9-]+$/.test(String(e.defSubset || "")) ? e.defSubset : "latin",
+              weights: Array.isArray(e.weights) ? e.weights : [400],
+              styles: Array.isArray(e.styles) ? e.styles : ["normal"],
+              source: "fontsource", bytes: 0
+            })
+          }
+          out.sort(function(a, b) {
+            var an = a.family.toLowerCase(), bn = b.family.toLowerCase()
+            return an < bn ? -1 : (an > bn ? 1 : 0)
+          })
+          root.catalogue = out
+        } catch (e) {
+          root.catalogueError = "The font list came back unreadable"
+        }
+      }
+    }
+    onExited: function(code) {
+      root.catalogueLoading = false
+      if (code !== 0) {
+        var m = catalogueFetch.stderr && catalogueFetch.stderr.text ? catalogueFetch.stderr.text.trim() : ""
+        root.catalogueError = m ? m : "Could not reach the font catalogue"
+      }
+    }
+  }
+
+  Process {
+    id: nerdFetch
+    stderr: StdioCollector {}
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var rel = JSON.parse(this.text)
+          if (!rel || !Array.isArray(rel.assets)) return
+          if (!/^v[0-9.]+$/.test(String(rel.tag_name || ""))) return
+          root.nerdTag = rel.tag_name
+          var out = []
+          for (var i = 0; i < rel.assets.length && out.length < 500; i++) {
+            var a = rel.assets[i]
+            var n = String(a.name || "")
+            if (!/^[A-Za-z0-9._-]+\.zip$/.test(n)) continue
+            out.push({
+              id: n, family: n.replace(/\.zip$/, ""),
+              category: "nerd font", license: "see upstream",
+              asset: n, bytes: Number(a.size) || 0,
+              source: "nerd", weights: [], styles: [], subset: ""
+            })
+          }
+          out.sort(function(a, b) {
+            var an = a.family.toLowerCase(), bn = b.family.toLowerCase()
+            return an < bn ? -1 : (an > bn ? 1 : 0)
+          })
+          root.nerdFonts = out
+        } catch (e) {
+          root.catalogueError = "The Nerd Fonts list came back unreadable"
+        }
+      }
+    }
+    onExited: function(code) {
+      root.catalogueLoading = false
+      if (code !== 0) {
+        var m = nerdFetch.stderr && nerdFetch.stderr.text ? nerdFetch.stderr.text.trim() : ""
+        root.catalogueError = m ? m : "Could not reach the Nerd Fonts list"
+      }
+    }
+  }
+
+  // Downloads faces into a temp folder, then hands that folder to the SAME
+  // staging path a dropped folder uses -- so a download previews, lists its
+  // families and installs through code that is already tested.
+  Process {
+    id: faceDownload
+    stderr: StdioCollector {}
+    onExited: function(code) {
+      root.browseBusy = false
+      if (code === 0 && root.browseTemp) {
+        // Hand off to the installed tab's staged view: it already previews,
+        // lists families and installs. No second install path to get wrong.
+        root.tab = "installed"
+        root.stage(root.browseTemp)
+      } else {
+        var m = faceDownload.stderr && faceDownload.stderr.text ? faceDownload.stderr.text.trim() : ""
+        root.status = m ? m : "Download failed"
+      }
+    }
+  }
+
+  Process {
+    id: zipDownload
+    stderr: StdioCollector {}
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var path = this.text.trim()
+        if (path) root.pendingZip = path
+      }
+    }
+    onExited: function(code) {
+      root.browseBusy = false
+      if (code === 0 && root.pendingZip) {
+        root.tab = "installed"
+        root.stage(root.pendingZip)
+        root.pendingZip = ""
+      } else {
+        var m = zipDownload.stderr && zipDownload.stderr.text ? zipDownload.stderr.text.trim() : ""
+        root.status = m ? m : "Download failed"
+      }
+    }
+  }
+
+  property string pendingZip: ""
+
+  readonly property string cacheRoot: (Quickshell.env("XDG_CACHE_HOME") || (Quickshell.env("HOME") + "/.cache")) + "/omafont"
+
+  function loadBrowse() {
+    if (root.catalogueLoading) return
+    root.catalogueLoading = true
+    root.catalogueError = ""
+    root.browseLoaded = true
+    catalogueFetch.command = ["sh", "-c", root.catalogueScript, "omafont-catalogue",
+                              root.cacheRoot + "/fontsource.json",
+                              String(root.catalogueCap), String(root.catalogueMaxAge)]
+    catalogueFetch.running = true
+    nerdFetch.command = ["sh", "-c", root.nerdScript, "omafont-nerd",
+                         root.cacheRoot + "/nerdfonts.json",
+                         String(root.catalogueCap), String(root.catalogueMaxAge)]
+    nerdFetch.running = true
+  }
+
+  function downloadFaces(fam, faces) {
+    if (!fam || !faces.length || root.browseBusy) return
+    root.browseBusy = true
+    root.status = "Downloading " + fam.family + "..."
+    root.browseTemp = root.cacheRoot + "/dl/" + fam.id
+    var args = ["sh", "-c", root.downloadScript, "omafont-download",
+                root.browseTemp, fam.id, fam.subset]
+    for (var i = 0; i < faces.length; i++) {
+      args.push(String(faces[i][0]))
+      args.push(String(faces[i][1]))
+    }
+    faceDownload.command = args
+    faceDownload.running = true
+  }
+
+  function downloadNerd(fam) {
+    if (!fam || root.browseBusy || !root.nerdTag) return
+    root.browseBusy = true
+    root.status = "Downloading " + fam.family + " (" + root.mib(fam.bytes) + ")..."
+    zipDownload.command = ["sh", "-c", root.zipDownloadScript, "omafont-zip",
+                           root.cacheRoot + "/dl", root.nerdTag, fam.asset,
+                           String(Math.max(1048576, fam.bytes + 1048576))]
+    zipDownload.running = true
+  }
+
+  function mib(n) {
+    if (!n) return ""
+    return (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + " MB"
+  }
+
   // ---- Scan --------------------------------------------------------------
   // One fc-list pass gives family, style, path and spacing. spacing 100 is
   // fontconfig's mono flag, which is what gates "Set as terminal font".
@@ -853,6 +1249,8 @@ Item {
     try {
       if (payloadJson && payloadJson.length > 65536) return
       var payload = JSON.parse(payloadJson || "{}")
+      if (payload && (payload.tab === "browse" || payload.tab === "installed"))
+        root.tab = payload.tab
       if (payload && payload.pick === true) { root.openPicker(); return }
       if (!payload || !payload.install) return
       var want = payload.install
@@ -1037,16 +1435,61 @@ Item {
           width: parent.width
           height: root.headerH
 
-          Text {
-            textFormat: Text.PlainText
+          Row {
             id: titleText
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            text: "Fonts"
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.heading
-            font.bold: true
+            spacing: Style.spacing.lg
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
+              text: "Fonts"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.heading
+              font.bold: true
+            }
+
+            Repeater {
+              model: [{ key: "installed", label: "Installed" },
+                      { key: "browse", label: "Browse" }]
+
+              Item {
+                id: tabItem
+                required property var modelData
+                anchors.verticalCenter: parent.verticalCenter
+                implicitWidth: tabLabel.implicitWidth + Style.spacing.md * 2
+                implicitHeight: tabLabel.implicitHeight + Style.spacing.sm * 2
+
+                Rectangle {
+                  anchors.fill: parent
+                  radius: Math.max(2, Style.space(4))
+                  color: root.tab === tabItem.modelData.key
+                         ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
+                         : (tabMouse.containsMouse ? Style.hoverFill : "transparent")
+                }
+
+                Text {
+                  id: tabLabel
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: tabItem.modelData.label
+                  color: root.tab === tabItem.modelData.key ? root.accent : root.foreground
+                  opacity: root.tab === tabItem.modelData.key ? 1.0 : 0.55
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+
+                MouseArea {
+                  id: tabMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.tab = tabItem.modelData.key
+                }
+              }
+            }
           }
 
           Text {
@@ -1059,6 +1502,16 @@ Item {
             textFormat: Text.PlainText
             text: {
               if (root.status !== "") return root.status
+              if (root.tab === "browse") {
+                if (!root.browseLoaded) return ""
+                if (root.catalogueLoading) return "fetching..."
+                var total = root.browseSource === "nerd"
+                            ? root.nerdFonts.length : root.catalogue.length
+                if (!total) return ""
+                return root.browseList.length === total
+                       ? total + " available"
+                       : root.browseList.length + " of " + total
+              }
               if (root.scanning) return "Scanning..."
               if (root.hideCoverage && root.filter === "" && root.coverageCount > 0)
                 return (root.families.length - root.coverageCount) + " of "
@@ -1075,6 +1528,7 @@ Item {
         // ---- Body: rail | divider | preview ----
         Row {
           id: body
+          visible: root.tab === "installed"
           width: parent.width
           height: parent.height - root.headerH - actions.height - divider.height
                   - root.contentSpacing * 3
@@ -1587,6 +2041,376 @@ Item {
                     }
                   }
                 }
+                }
+              }
+            }
+          }
+        }
+
+
+        // ---- Browse -----------------------------------------------------
+        Item {
+          id: browseBody
+          visible: root.tab === "browse"
+          width: parent.width
+          height: parent.height - root.headerH - actions.height - divider.height
+                  - root.contentSpacing * 3
+
+          // Nothing has been fetched yet. Say exactly what will be downloaded
+          // and let the person decide -- a panel that quietly pulls megabytes
+          // because you clicked a tab is doing something you did not ask for.
+          Column {
+            anchors.centerIn: parent
+            width: Math.min(Style.space(420), parent.width - Style.space(40))
+            spacing: Style.spacing.lg
+            visible: !root.browseLoaded
+
+            Text {
+              anchors.horizontalCenter: parent.horizontalCenter
+              textFormat: Text.PlainText
+              text: "Aa"
+              color: root.foreground
+              opacity: 0.16
+              font.family: root.fontFamily
+              font.pixelSize: Style.space(56)
+            }
+
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              textFormat: Text.PlainText
+              text: "Browse free fonts"
+              color: root.foreground
+              opacity: 0.6
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.subtitle
+            }
+
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              wrapMode: Text.WordWrap
+              textFormat: Text.PlainText
+              text: "Fetches two lists: about 2100 open-licence families from "
+                    + "Fontsource, and the Nerd Fonts release index. Roughly "
+                    + "600 KB, cached for a day. No font is downloaded until "
+                    + "you ask for it."
+              color: root.foreground
+              opacity: 0.4
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Item {
+              width: parent.width
+              height: loadBtn.implicitHeight
+              Button {
+                id: loadBtn
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "Load font list"
+                bordered: true
+                foreground: root.accent
+                fontFamily: root.fontFamily
+                onClicked: root.loadBrowse()
+              }
+            }
+
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              wrapMode: Text.WordWrap
+              textFormat: Text.PlainText
+              visible: root.catalogueError !== ""
+              text: root.catalogueError
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          Text {
+            anchors.centerIn: parent
+            visible: root.browseLoaded && root.catalogueLoading
+            textFormat: Text.PlainText
+            text: "Fetching the font list..."
+            color: root.foreground
+            opacity: 0.5
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.subtitle
+          }
+
+          Row {
+            anchors.fill: parent
+            spacing: root.contentSpacing
+            visible: root.browseLoaded && !root.catalogueLoading
+
+            Rectangle {
+              width: root.railWidth
+              height: parent.height
+              radius: Math.max(2, Style.space(6))
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+              border.width: Style.spacing.hairline
+              border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+              Column {
+                anchors.fill: parent
+                anchors.margins: Style.spacing.md
+                spacing: Style.spacing.sm
+
+                Row {
+                  width: parent.width
+                  spacing: Style.spacing.xs
+
+                  Repeater {
+                    model: [{ key: "fontsource", label: "Google Fonts" },
+                            { key: "nerd", label: "Nerd Fonts" }]
+
+                    Item {
+                      id: srcItem
+                      required property var modelData
+                      implicitWidth: srcLabel.implicitWidth + Style.spacing.md * 2
+                      implicitHeight: srcLabel.implicitHeight + Style.spacing.sm * 2
+
+                      Rectangle {
+                        anchors.fill: parent
+                        radius: height / 2
+                        color: root.browseSource === srcItem.modelData.key
+                               ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
+                               : "transparent"
+                      }
+
+                      Text {
+                        id: srcLabel
+                        anchors.centerIn: parent
+                        textFormat: Text.PlainText
+                        text: srcItem.modelData.label
+                        color: root.browseSource === srcItem.modelData.key ? root.accent : root.foreground
+                        opacity: root.browseSource === srcItem.modelData.key ? 1.0 : 0.5
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                      }
+
+                      MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          root.browseSource = srcItem.modelData.key
+                          root.browseSelectedId = ""
+                        }
+                      }
+                    }
+                  }
+                }
+
+                TextField {
+                  id: browseFilterField
+                  width: parent.width
+                  placeholderText: "Filter"
+                  foreground: root.foreground
+                  accent: root.accent
+                  onTextChanged: root.browseFilter = text
+                }
+
+                ListView {
+                  id: browseListView
+                  width: parent.width
+                  height: parent.height - browseFilterField.height
+                          - Style.spacing.sm * 3 - Style.space(22)
+                  clip: true
+                  model: root.browseList
+                  boundsBehavior: Flickable.StopAtBounds
+
+                  delegate: Item {
+                    id: bRow
+                    required property var modelData
+                    width: browseListView.width
+                    height: root.rowH
+
+                    Rectangle {
+                      anchors.fill: parent
+                      anchors.rightMargin: Style.spacing.xxs
+                      radius: Math.max(2, Style.space(4))
+                      color: bRow.modelData.id === root.browseSelectedId
+                             ? Style.selectedAccentFill
+                             : (bMouse.containsMouse ? Style.hoverFill : "transparent")
+
+                      Rectangle {
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        width: Style.space(2)
+                        radius: width
+                        color: root.accent
+                        visible: bRow.modelData.id === root.browseSelectedId
+                      }
+
+                      Text {
+                        anchors.left: parent.left
+                        anchors.leftMargin: Style.spacing.md
+                        anchors.right: bMeta.left
+                        anchors.rightMargin: Style.spacing.xs
+                        anchors.verticalCenter: parent.verticalCenter
+                        elide: Text.ElideRight
+                        textFormat: Text.PlainText
+                        text: bRow.modelData.family
+                        color: root.foreground
+                        opacity: 0.85
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.body
+                      }
+
+                      Text {
+                        id: bMeta
+                        anchors.right: parent.right
+                        anchors.rightMargin: Style.spacing.sm
+                        anchors.verticalCenter: parent.verticalCenter
+                        textFormat: Text.PlainText
+                        text: bRow.modelData.source === "nerd"
+                              ? root.mib(bRow.modelData.bytes)
+                              : bRow.modelData.category
+                        color: root.foreground
+                        opacity: 0.35
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                      }
+
+                      MouseArea {
+                        id: bMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.browseSelectedId = bRow.modelData.id
+                      }
+                    }
+                  }
+                }
+
+                Text {
+                  width: parent.width
+                  height: Style.space(18)
+                  verticalAlignment: Text.AlignVCenter
+                  textFormat: Text.PlainText
+                  text: root.browseList.length + " of "
+                        + (root.browseSource === "nerd" ? root.nerdFonts.length : root.catalogue.length)
+                  color: root.foreground
+                  opacity: 0.3
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+            }
+
+            Item {
+              width: parent.width - root.railWidth - root.contentSpacing
+              height: parent.height
+
+              Text {
+                anchors.centerIn: parent
+                visible: !root.browseSelected
+                textFormat: Text.PlainText
+                text: "Pick a font to see what it installs"
+                color: root.foreground
+                opacity: 0.45
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.subtitle
+              }
+
+              Column {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                spacing: Style.spacing.xl
+                visible: root.browseSelected !== null
+
+                Text {
+                  width: parent.width
+                  elide: Text.ElideRight
+                  textFormat: Text.PlainText
+                  text: root.browseSelected ? root.browseSelected.family : ""
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.space(42)
+                  fontSizeMode: Text.HorizontalFit
+                  minimumPixelSize: Style.space(18)
+                }
+
+                Flow {
+                  width: parent.width
+                  spacing: Style.spacing.sm
+
+                  Chip {
+                    visible: root.browseSelected && root.browseSelected.license !== ""
+                    label: root.browseSelected ? root.browseSelected.license : ""
+                    tint: root.accent
+                  }
+                  Chip {
+                    visible: root.browseSelected && root.browseSelected.category !== ""
+                    label: root.browseSelected ? root.browseSelected.category : ""
+                    tint: root.foreground
+                  }
+                  Chip {
+                    visible: root.browseSelected && root.browseSelected.source === "fontsource"
+                    label: root.browseSelected
+                           ? root.browseSelected.weights.length + " weights" : ""
+                    tint: root.foreground
+                  }
+                  Chip {
+                    visible: root.browseSelected && root.browseSelected.source === "nerd"
+                    label: root.browseSelected ? root.mib(root.browseSelected.bytes) : ""
+                    tint: root.foreground
+                  }
+                }
+
+                Text {
+                  width: parent.width
+                  wrapMode: Text.WordWrap
+                  textFormat: Text.PlainText
+                  text: root.browseSelected && root.browseSelected.source === "nerd"
+                        ? "Downloads the family archive, then previews every face it contains before anything is installed."
+                        : "Downloads the faces below, then previews them before anything is installed."
+                  color: root.foreground
+                  opacity: 0.4
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                Row {
+                  width: parent.width
+                  spacing: Style.spacing.sm
+
+                  Button {
+                    text: root.browseSelected && root.browseSelected.source === "nerd"
+                          ? "Download " + root.mib(root.browseSelected.bytes)
+                          : "Download "
+                            + (root.browseSelected ? root.browseCoreFaces(root.browseSelected).length : 0)
+                            + " faces"
+                    bordered: true
+                    enabled: !root.browseBusy
+                    opacity: root.browseBusy ? 0.5 : 1.0
+                    foreground: root.accent
+                    fontFamily: root.fontFamily
+                    onClicked: {
+                      if (!root.browseSelected) return
+                      if (root.browseSelected.source === "nerd") root.downloadNerd(root.browseSelected)
+                      else root.downloadFaces(root.browseSelected,
+                                              root.browseCoreFaces(root.browseSelected))
+                    }
+                  }
+
+                  Button {
+                    text: "Every weight"
+                    bordered: true
+                    visible: root.browseSelected && root.browseSelected.source === "fontsource"
+                    enabled: !root.browseBusy
+                    opacity: root.browseBusy ? 0.5 : 1.0
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    onClicked: {
+                      if (!root.browseSelected) return
+                      root.downloadFaces(root.browseSelected,
+                                         root.browseAllFaces(root.browseSelected))
+                    }
+                  }
                 }
               }
             }
