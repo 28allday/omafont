@@ -111,6 +111,7 @@ not touch them.
 | | |
 |---|---|
 | `fontconfig` | `fc-list`, `fc-scan`, `fc-cache` — present on any Omarchy install |
+| `python3` | installing and removing font files — present on any Omarchy install, as `uwsm` requires it |
 | `unzip` | only to install from a `.zip` |
 | `zenity` | **optional** — adds the *Install from file…* button. Without it, use drag-and-drop or the double-click handler |
 
